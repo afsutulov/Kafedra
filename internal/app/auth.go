@@ -1,0 +1,338 @@
+package app
+
+import (
+	"errors"
+	"net/http"
+	"strings"
+	"time"
+
+	"kafedra/internal/secure"
+)
+
+const cookieName = "kafedra_sid"
+
+func (c *Ctx) loadSession() {
+	ck, err := c.R.Cookie(cookieName)
+	if err != nil || ck.Value == "" {
+		return
+	}
+	sid := secure.HashToken(ck.Value)
+	s, ok := c.Sessions.Get(sid)
+	if !ok {
+		return
+	}
+	set := c.S()
+	now := time.Now()
+	if now.Sub(s.Seen) > time.Duration(set.IdleMinutes)*time.Minute || now.Sub(s.Created) > time.Duration(set.SessionHours)*time.Hour {
+		c.Sessions.Delete(sid)
+		return
+	}
+	u, ok := c.Users.Get(s.UserID)
+	if !ok || u.Disabled {
+		c.Sessions.Delete(sid)
+		return
+	}
+	if now.Sub(s.Seen) > time.Minute {
+		c.Sessions.Update(sid, func(x *Session) error { x.Seen = now; return nil })
+		s.Seen = now
+	}
+	c.User, c.Sess = &u, &s
+}
+
+func (c *Ctx) mfaRequired() bool {
+	switch c.S().MFARoles {
+	case "admin":
+		return c.User.Role == RoleAdmin
+	case "staff":
+		return c.User.Role != RoleStudent
+	case "all":
+		return true
+	}
+	return false
+}
+
+func (c *Ctx) passwordExpired() bool {
+	d := c.S().PwMaxAgeDays
+	return d > 0 && time.Since(c.User.PassChanged) > time.Duration(d)*24*time.Hour
+}
+
+// allow — ограничение частоты попыток входа с одного адреса (20 за 10 минут).
+func (a *App) allow(ip string) bool {
+	a.limMu.Lock()
+	defer a.limMu.Unlock()
+	now := time.Now()
+	keep := a.lim[ip][:0]
+	for _, t := range a.lim[ip] {
+		if now.Sub(t) < 10*time.Minute {
+			keep = append(keep, t)
+		}
+	}
+	if len(keep) >= 20 {
+		a.lim[ip] = keep
+		return false
+	}
+	a.lim[ip] = append(keep, now)
+	if len(a.lim) > 100000 {
+		a.lim = map[string][]time.Time{}
+	}
+	return true
+}
+
+func (c *Ctx) loginPage() {
+	if c.User != nil {
+		http.Redirect(c.W, c.R, "/", http.StatusSeeOther)
+		return
+	}
+	c.Render("login", map[string]any{"Banner": c.S().Banner})
+}
+
+func (c *Ctx) loginPost() {
+	login := strings.ToLower(c.F("login"))
+	fail := func(reason string) {
+		c.Audit.Log(secure.AuditRecord{Event: "вход в систему", Login: login, IP: c.IP, OK: false, Detail: reason})
+		c.W.WriteHeader(http.StatusUnauthorized)
+		// одинаковое сообщение для всех причин: не раскрываем существование учётной записи
+		c.Render("login", map[string]any{"Banner": c.S().Banner, "Error": "Неверный логин или пароль либо учётная запись заблокирована."})
+	}
+	if !c.allow(c.IP) {
+		fail("превышена частота попыток с адреса")
+		return
+	}
+	u, found := c.Users.First(func(u *User) bool { return u.Login == login })
+	ok, rehash := c.Keys.VerifyPassword(c.R.FormValue("password"), u.PassHash) // выполняется и для несуществующих логинов
+	set := c.S()
+	now := time.Now()
+	switch {
+	case !found:
+		fail("неизвестный логин")
+		return
+	case u.Disabled:
+		fail("учётная запись отключена")
+		return
+	case now.Before(u.LockedUntil):
+		fail("учётная запись временно заблокирована")
+		return
+	case !ok:
+		var locked bool
+		c.Users.Update(u.ID, func(x *User) error {
+			x.Failed++
+			if set.LockAttempts > 0 && x.Failed >= set.LockAttempts {
+				x.Failed, x.LockedUntil, locked = 0, now.Add(time.Duration(set.LockMinutes)*time.Minute), true
+			}
+			return nil
+		})
+		if locked {
+			c.Audit.Log(secure.AuditRecord{Event: "блокировка учётной записи", Login: login, UserID: u.ID, IP: c.IP, OK: false, Detail: "превышено число неудачных попыток входа"})
+		}
+		fail("неверный пароль")
+		return
+	}
+	c.Users.Update(u.ID, func(x *User) error {
+		x.Failed, x.LastLogin, x.LastIP = 0, now, c.IP
+		if rehash {
+			x.PassHash = c.Keys.HashPassword(c.R.FormValue("password"))
+		}
+		return nil
+	})
+	// ограничение числа одновременных сеансов: вытесняется самый старый
+	mine := sortBy(c.Sessions.Find(func(s *Session) bool { return s.UserID == u.ID }), func(a, b *Session) bool { return a.Created.Before(b.Created) })
+	for len(mine) >= set.MaxSessions && set.MaxSessions > 0 {
+		c.Sessions.Delete(mine[0].ID)
+		mine = mine[1:]
+	}
+	token := secure.Token() // новый идентификатор сеанса при каждом входе (защита от фиксации сеанса)
+	ua := c.R.UserAgent()
+	if len(ua) > 200 {
+		ua = ua[:200]
+	}
+	c.Sessions.Put(secure.HashToken(token), Session{ID: secure.HashToken(token), UserID: u.ID, CSRF: secure.Token(),
+		Created: now, Seen: now, IP: c.IP, UA: ua, MFA: !u.TOTPEnabled})
+	http.SetCookie(c.W, &http.Cookie{Name: cookieName, Value: token, Path: "/", HttpOnly: true, Secure: c.isHTTPS(c.R), SameSite: http.SameSiteStrictMode})
+	c.Audit.Log(secure.AuditRecord{Event: "вход в систему", Login: login, UserID: u.ID, IP: c.IP, OK: true})
+	http.Redirect(c.W, c.R, "/", http.StatusSeeOther)
+}
+
+func (c *Ctx) logout() {
+	c.Sessions.Delete(c.Sess.ID)
+	http.SetCookie(c.W, &http.Cookie{Name: cookieName, Path: "/", MaxAge: -1, HttpOnly: true})
+	c.Log("выход из системы", "", true, "")
+	http.Redirect(c.W, c.R, "/login", http.StatusSeeOther)
+}
+
+func (c *Ctx) mfaPage() {
+	if c.Sess.MFA {
+		http.Redirect(c.W, c.R, "/", http.StatusSeeOther)
+		return
+	}
+	c.Render("mfa", nil)
+}
+
+func (c *Ctx) mfaPost() {
+	if c.Sess.MFA {
+		http.Redirect(c.W, c.R, "/", http.StatusSeeOther)
+		return
+	}
+	if !c.allow("mfa:" + c.User.ID) {
+		c.Sessions.Delete(c.Sess.ID)
+		c.Log("второй фактор", "", false, "превышено число попыток, сеанс завершён")
+		http.Redirect(c.W, c.R, "/login", http.StatusSeeOther)
+		return
+	}
+	secret, err := c.Keys.Open(c.User.TOTPSecret)
+	step, ok := int64(0), false
+	if err == nil {
+		step, ok = secure.VerifyTOTP(string(secret), c.F("code"), time.Now(), c.User.TOTPStep)
+	}
+	if !ok {
+		c.Log("второй фактор", "", false, "неверный код")
+		c.W.WriteHeader(http.StatusUnauthorized)
+		c.Render("mfa", map[string]any{"Error": "Неверный код. Проверьте время на устройстве и повторите."})
+		return
+	}
+	c.Users.Update(c.User.ID, func(x *User) error { x.TOTPStep = step; return nil })
+	c.Sessions.Update(c.Sess.ID, func(s *Session) error { s.MFA = true; return nil })
+	c.Log("второй фактор", "", true, "")
+	http.Redirect(c.W, c.R, "/", http.StatusSeeOther)
+}
+
+func (c *Ctx) policy() secure.Policy {
+	s := c.S()
+	return secure.Policy{MinLength: s.PwMinLen, NeedUpper: s.PwUpper, NeedLower: s.PwLower, NeedDigit: s.PwDigit, NeedSymbol: s.PwSymbol}
+}
+
+// setPassword проверяет новый пароль по политике и истории и сохраняет его.
+func (a *App) setPassword(userID, pw string, pol secure.Policy, history int, mustChange bool) error {
+	u, ok := a.Users.Get(userID)
+	if !ok {
+		return errors.New("пользователь не найден")
+	}
+	if errs := secure.CheckPassword(pw, u.Login, pol); len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
+	}
+	if !mustChange { // при сбросе администратором история не проверяется
+		for _, old := range append([]string{u.PassHash}, u.PassHistory...) {
+			if ok, _ := a.Keys.VerifyPassword(pw, old); ok {
+				return errors.New("пароль совпадает с одним из предыдущих")
+			}
+		}
+	}
+	hash := a.Keys.HashPassword(pw)
+	return a.Users.Update(userID, func(x *User) error {
+		if x.PassHash != "" {
+			x.PassHistory = append([]string{x.PassHash}, x.PassHistory...)
+		}
+		if len(x.PassHistory) > history {
+			x.PassHistory = x.PassHistory[:max(history, 0)]
+		}
+		x.PassHash, x.PassChanged, x.MustChange, x.Failed, x.LockedUntil = hash, time.Now(), mustChange, 0, time.Time{}
+		return nil
+	})
+}
+
+func (c *Ctx) passwordPage() {
+	c.Render("password", map[string]any{"S": c.S(), "Forced": c.User.MustChange || c.passwordExpired(), "NeedConsent": c.User.Consent.IsZero()})
+}
+
+func (c *Ctx) passwordPost() {
+	needConsent := c.User.Consent.IsZero()
+	forced := c.User.MustChange || c.passwordExpired()
+	bad := func(msg string) {
+		c.W.WriteHeader(http.StatusBadRequest)
+		c.Render("password", map[string]any{"S": c.S(), "Forced": forced, "NeedConsent": needConsent, "Error": msg})
+	}
+	if needConsent && c.F("consent") != "1" {
+		bad("Для работы в системе необходимо согласие на обработку персональных данных.")
+		return
+	}
+	changing := forced || c.R.FormValue("new") != ""
+	if changing {
+		if ok, _ := c.Keys.VerifyPassword(c.R.FormValue("old"), c.User.PassHash); !ok {
+			c.Log("смена пароля", "", false, "неверный текущий пароль")
+			bad("Текущий пароль указан неверно.")
+			return
+		}
+		if c.R.FormValue("new") != c.R.FormValue("new2") {
+			bad("Новый пароль и его подтверждение не совпадают.")
+			return
+		}
+		if err := c.setPassword(c.User.ID, c.R.FormValue("new"), c.policy(), c.S().PwHistory, false); err != nil {
+			bad("Пароль не принят: " + err.Error() + ".")
+			return
+		}
+		// все прочие сеансы пользователя завершаются
+		for _, s := range c.Sessions.Find(func(s *Session) bool { return s.UserID == c.User.ID && s.ID != c.Sess.ID }) {
+			c.Sessions.Delete(s.ID)
+		}
+		c.Log("смена пароля", "", true, "")
+	}
+	if needConsent {
+		c.Users.Update(c.User.ID, func(x *User) error { x.Consent = time.Now(); return nil })
+		c.Log("согласие на обработку персональных данных", "", true, "")
+	}
+	c.Redirect("/", "Изменения сохранены.")
+}
+
+func (c *Ctx) profile() {
+	data := map[string]any{"S": c.S(), "MFARequired": c.mfaRequired()}
+	if c.Sess.PendingTOTP != "" {
+		if sec, err := c.Keys.Open(c.Sess.PendingTOTP); err == nil {
+			data["Secret"] = string(sec)
+			data["OTPAuth"] = "otpauth://totp/" + c.Cfg.SystemName + ":" + c.User.Login + "?secret=" + string(sec) + "&issuer=" + c.Cfg.SystemName
+		}
+	}
+	data["Sessions"] = sortBy(c.Sessions.Find(func(s *Session) bool { return s.UserID == c.User.ID }), func(a, b *Session) bool { return a.Seen.After(b.Seen) })
+	data["SessID"] = c.Sess.ID
+	if c.User.GroupID != "" {
+		g, _ := c.Groups.Get(c.User.GroupID)
+		data["Group"] = g.Name
+	}
+	c.Render("profile", data)
+}
+
+func (c *Ctx) mfaStart() {
+	sec := secure.NewTOTPSecret()
+	c.Sessions.Update(c.Sess.ID, func(s *Session) error { s.PendingTOTP = c.Keys.Seal([]byte(sec)); return nil })
+	c.Redirect("/profile", "")
+}
+
+func (c *Ctx) mfaConfirm() {
+	sec, err := c.Keys.Open(c.Sess.PendingTOTP)
+	if err != nil || c.Sess.PendingTOTP == "" {
+		c.Redirect("/profile", "!Сначала начните подключение.")
+		return
+	}
+	step, ok := secure.VerifyTOTP(string(sec), c.F("code"), time.Now(), 0)
+	if !ok {
+		c.Redirect("/profile", "!Код не подошёл. Проверьте время на устройстве и введите новый код.")
+		return
+	}
+	sealed := c.Sess.PendingTOTP
+	c.Users.Update(c.User.ID, func(x *User) error { x.TOTPSecret, x.TOTPEnabled, x.TOTPStep = sealed, true, step; return nil })
+	c.Sessions.Update(c.Sess.ID, func(s *Session) error { s.PendingTOTP = ""; return nil })
+	c.Log("подключение двухфакторной аутентификации", "", true, "")
+	c.Redirect("/profile", "Двухфакторная аутентификация подключена.")
+}
+
+func (c *Ctx) mfaDisable() {
+	if c.mfaRequired() {
+		c.Redirect("/profile", "!Для вашей роли двухфакторная аутентификация обязательна.")
+		return
+	}
+	if ok, _ := c.Keys.VerifyPassword(c.R.FormValue("password"), c.User.PassHash); !ok {
+		c.Log("отключение двухфакторной аутентификации", "", false, "неверный пароль")
+		c.Redirect("/profile", "!Неверный пароль.")
+		return
+	}
+	c.Users.Update(c.User.ID, func(x *User) error { x.TOTPSecret, x.TOTPEnabled = "", false; return nil })
+	c.Log("отключение двухфакторной аутентификации", "", true, "")
+	c.Redirect("/profile", "Двухфакторная аутентификация отключена.")
+}
+
+func (c *Ctx) sessionRevoke() {
+	id := c.F("id")
+	if s, ok := c.Sessions.Get(id); ok && s.UserID == c.User.ID && id != c.Sess.ID {
+		c.Sessions.Delete(id)
+		c.Log("завершение сеанса", id[:12], true, "")
+	}
+	c.Redirect("/profile", "Сеанс завершён.")
+}

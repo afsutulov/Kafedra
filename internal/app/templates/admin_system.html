@@ -1,0 +1,26 @@
+{{define "title"}}Система{{end}}
+{{define "content"}}
+<h2>Система</h2>
+<div class="glass-subcard"><dl class="kv">
+  <dt>Версия</dt><dd>{{.Cfg.SystemName}} {{.Version}}</dd>
+  <dt>Платформа</dt><dd>{{.OS}}, {{.Go}}</dd>
+  <dt>Время работы</dt><dd>{{.Uptime}}</dd>
+  <dt>Память процесса</dt><dd>{{size .Mem}}</dd>
+  <dt>Каталог данных</dt><dd class="mono">{{.Cfg.DataDir}}</dd>
+  <dt>Часовой пояс</dt><dd>{{.Cfg.Timezone}}</dd>
+  <dt>Контрольная сумма исполняемого файла (SHA-256)</dt><dd class="mono">{{.BinSum}}</dd>
+</dl>
+<p class="note">Сверяйте контрольную сумму с эталонной из комплекта поставки (файл SHA256SUMS) — это контроль целостности программного обеспечения.</p></div>
+<h3>Объём данных</h3>
+<div class="grid">{{range $k, $v := .Counts}}<div class="tile"><span class="muted">{{$k}}</span><span class="stat">{{$v}}</span></div>{{end}}</div>
+<h3>Резервное копирование</h3>
+<div class="glass-subcard">
+  <form method="post" action="/admin/backup">{{template "csrf" .}}<button class="primary-btn" type="submit">Скачать резервную копию</button></form>
+  <p class="note">Архив содержит базу данных, загруженные файлы и журнал событий. Мастер-ключ в архив, выгружаемый через браузер, не включается: полная копия с ключом создаётся командой <span class="mono">kafedra backup -with-key</span> на сервере. Восстановление — командой <span class="mono">kafedra restore</span>.</p>
+</div>
+<h3>Активные сеансы ({{len .Sessions}})</h3>
+<div class="table-wrap"><table><thead><tr><th>Пользователь</th><th>Роль</th><th>Адрес</th><th>Начат</th><th>Активность</th><th></th></tr></thead><tbody>
+{{range .Sessions}}<tr><td>{{.User}}</td><td>{{role .Role}}</td><td class="mono">{{.S.IP}}</td><td>{{dt .S.Created}}</td><td>{{dt .S.Seen}}</td>
+<td>{{if eq .S.ID $.SessID}}<span class="tag ok">текущий</span>{{else}}<form method="post" action="/admin/sessions/revoke" class="inline">{{template "csrf" $}}<input type="hidden" name="id" value="{{.S.ID}}"><button class="danger-btn small" type="submit">Завершить</button></form>{{end}}</td></tr>{{end}}
+</tbody></table></div>
+{{end}}

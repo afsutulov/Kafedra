@@ -1,0 +1,61 @@
+{{define "title"}}Главная — {{.Cfg.SystemName}}{{end}}
+{{define "content"}}
+<h2>Здравствуйте, {{.Me.FullName}}</h2>
+
+{{if .Stats}}
+<div class="grid">
+  <div class="tile"><span class="muted">Учащиеся</span><span class="stat">{{.Stats.Students}}</span></div>
+  <div class="tile"><span class="muted">Преподаватели</span><span class="stat">{{.Stats.Teachers}}</span></div>
+  <div class="tile"><span class="muted">Курсы / группы</span><span class="stat">{{.Stats.Courses}} / {{.Stats.Groups}}</span></div>
+  <div class="tile"><span class="muted">Файлы</span><span class="stat">{{.Stats.Files}}</span><span class="muted">{{size .Stats.Size}}</span></div>
+  <div class="tile"><span class="muted">Активные сеансы</span><span class="stat">{{.Stats.Sessions}}</span></div>
+  <a class="tile" href="/admin/audit?fail=1"><span class="muted">Отказы и ошибки за 24 часа</span><span class="stat">{{.Stats.Failed}}</span><span class="muted">Открыть журнал событий</span></a>
+</div>
+{{end}}
+
+{{if .Deadlines}}
+<h3>Ближайшие сроки</h3>
+<ul class="items">{{range .Deadlines}}
+  <li><span class="kind {{.Item.Kind}}">{{kind .Item.Kind}}</span><a class="title" href="/items/{{.Item.ID}}">{{.Item.Title}}</a><span class="muted">{{.Course}}</span><span class="tag warn">до {{dt .Item.CloseAt}}</span></li>
+{{end}}</ul>
+{{end}}
+
+{{if .Pending}}
+<h3>Работы на проверке</h3>
+<ul class="items">{{range .Pending}}
+  <li><span class="kind task">Задание</span><a class="title" href="/items/{{.Item.ID}}">{{.Item.Title}}</a><span class="muted">{{.Course}}</span><span class="tag warn">ожидают: {{.Count}}</span></li>
+{{end}}</ul>
+{{end}}
+
+{{if .Cards}}
+<h3>Мои курсы</h3>
+<div class="grid">{{range .Cards}}
+  <a class="tile" href="/courses/{{.Course.ID}}"><h3>{{.Course.Title}}</h3><span class="muted">{{.Teachers}}</span>
+  {{if .Total}}<progress max="{{.Total}}" value="{{.Done}}"></progress><span class="muted">Выполнено {{.Done}} из {{.Total}}</span>{{end}}</a>
+{{end}}</div>
+{{end}}
+
+<h3>Занятия на ближайшие 7 дней</h3>
+{{if not .Events}}<p class="muted">Занятий не запланировано.</p>{{end}}
+{{range .Events}}
+<div class="ev"><time>{{date .Event.Start}}<br>{{clock .Event.Start}}–{{clock .Event.End}}</time>
+  <div><strong>{{.Course}}</strong> · {{evkind .Event.Kind}}<br><span class="muted">{{.Group}}{{if .Event.Room}} · ауд. {{.Event.Room}}{{end}} · {{.Teacher}}</span></div><span></span></div>
+{{end}}
+
+<h3>Объявления</h3>
+{{if eq .Me.Role "admin"}}
+<details><summary>Новое общее объявление</summary>
+<form method="post" action="/news" class="stack-form">{{template "csrf" .}}
+  <label>Заголовок<input type="text" name="title" required maxlength="200"></label>
+  <label>Текст (поддерживается разметка Markdown)<textarea name="body" maxlength="20000"></textarea></label>
+  <div class="row"><button class="primary-btn" type="submit">Опубликовать</button></div>
+</form></details>
+{{end}}
+{{if not .News}}<p class="muted">Объявлений нет.</p>{{end}}
+{{range .News}}
+<div class="post"><div class="post-head"><strong>{{.News.Title}}</strong><span class="muted">{{if .Course}}{{.Course}} · {{end}}{{.Author}} · {{dt .News.Created}}</span></div>
+  <div class="prose">{{.Body}}</div>
+  {{if and (eq $.Me.Role "admin") (not .News.CourseID)}}<form method="post" action="/news/{{.News.ID}}/delete" data-confirm="Удалить объявление?">{{template "csrf" $}}<button class="danger-btn small" type="submit">Удалить</button></form>{{end}}
+</div>
+{{end}}
+{{end}}

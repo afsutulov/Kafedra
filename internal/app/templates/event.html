@@ -1,0 +1,20 @@
+{{define "title"}}Посещаемость{{end}}
+{{define "content"}}
+<a class="ghost-link" href="/schedule?w={{dtlocal .Event.Start}}">← Расписание</a>
+<h2>{{.Course.Title}}: {{evkind .Event.Kind}}</h2>
+<p>{{dt .Event.Start}}–{{clock .Event.End}} · группа {{.Group}}{{if .Event.Room}} · ауд. {{.Event.Room}}{{end}}</p>
+<form method="post" action="/events/{{.Event.ID}}/attendance">{{template "csrf" .}}
+<div class="table-wrap"><table><thead><tr><th>Учащийся</th><th class="c">Присутствовал</th><th class="c">Опоздал</th><th class="c">Отсутствовал</th><th class="c">Уваж. причина</th><th class="c">Не отмечено</th></tr></thead><tbody>
+{{range .Students}}{{$m := index $.Marks .ID}}<tr><td>{{.FullName}}</td>
+  <td class="c"><input type="radio" name="a_{{.ID}}" value="p" {{if eq $m "p"}}checked{{end}} aria-label="Присутствовал"></td>
+  <td class="c"><input type="radio" name="a_{{.ID}}" value="l" {{if eq $m "l"}}checked{{end}} aria-label="Опоздал"></td>
+  <td class="c"><input type="radio" name="a_{{.ID}}" value="a" {{if eq $m "a"}}checked{{end}} aria-label="Отсутствовал"></td>
+  <td class="c"><input type="radio" name="a_{{.ID}}" value="e" {{if eq $m "e"}}checked{{end}} aria-label="Уважительная причина"></td>
+  <td class="c"><input type="radio" name="a_{{.ID}}" value="" {{if not $m}}checked{{end}} aria-label="Не отмечено"></td></tr>
+{{else}}<tr><td colspan="6" class="muted">В группе нет учащихся.</td></tr>{{end}}
+</tbody></table></div>
+<div class="row"><button class="primary-btn" type="submit">Сохранить посещаемость</button></div>
+</form>
+<h3>Удаление</h3>
+<form method="post" action="/events/{{.Event.ID}}/delete" data-confirm="Удалить занятие и отметки посещаемости?">{{template "csrf" .}}<button class="danger-btn" type="submit">Удалить занятие</button></form>
+{{end}}

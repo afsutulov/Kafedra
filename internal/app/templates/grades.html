@@ -1,0 +1,16 @@
+{{define "title"}}Оценки{{end}}
+{{define "content"}}
+<h2>Мои оценки</h2>
+{{if not .Courses}}<p class="muted">Курсов пока нет.</p>{{end}}
+{{range .Courses}}{{$c := .}}
+<h3><a href="/courses/{{.Course.ID}}">{{.Course.Title}}</a></h3>
+<p>Итого: <strong>{{num .Total}} из {{num .Max}}</strong> ({{num .Percent}}%){{if .Max}} · текущая оценка: <strong>{{.Mark}}</strong>{{end}}{{if .Att.Total}} · посещено занятий: {{.Att.Present}} из {{.Att.Total}}{{end}}</p>
+{{if .Max}}<progress max="100" value="{{.Percent}}"></progress>{{end}}
+{{if .Cols}}
+<div class="table-wrap"><table><thead><tr><th>Контрольная точка</th><th>Вид</th><th class="num">Баллы</th><th class="num">Максимум</th></tr></thead><tbody>
+{{range .Cols}}<tr><td>{{if .Manual}}{{.Title}}{{else}}<a href="/items/{{.ID}}">{{.Title}}</a>{{end}}</td><td>{{if eq .Kind "test"}}тест{{else if eq .Kind "task"}}задание{{else}}{{date .Date}}{{end}}</td>
+<td class="num">{{with pt $c.Points .ID}}{{.}}{{else}}—{{end}}</td><td class="num">{{num .Max}}</td></tr>{{end}}
+</tbody></table></div>
+{{else}}<p class="muted">Контрольных точек пока нет.</p>{{end}}
+{{end}}
+{{end}}

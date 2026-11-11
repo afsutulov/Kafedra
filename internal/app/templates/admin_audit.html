@@ -1,0 +1,17 @@
+{{define "title"}}Журнал событий{{end}}
+{{define "content"}}
+<div class="section-header"><h2>Журнал событий безопасности</h2>
+  <form method="post" action="/admin/audit/verify">{{template "csrf" .}}<button class="soft-btn" type="submit">Проверить целостность</button></form></div>
+<form method="get" class="row">
+  <select name="m" aria-label="Месяц">{{range .Months}}<option value="{{.}}" {{if eq . $.Sel}}selected{{end}}>{{.}}</option>{{end}}</select>
+  <input type="search" name="q" value="{{.Q}}" placeholder="Логин, событие, адрес" aria-label="Поиск">
+  <label class="check"><input type="checkbox" name="fail" value="1" {{if .Fail}}checked{{end}}>Только отказы и ошибки</label>
+  <button class="ghost-btn" type="submit">Показать</button>
+</form>
+<p class="note">Найдено записей: {{.Total}}{{if gt .Total 500}}, показаны последние 500{{end}}. Записи связаны цепочкой хешей SHA-256: изменение или удаление любой записи обнаруживается проверкой целостности. Журнал хранится в каталоге данных (audit) и дублируется в системный журнал.</p>
+<div class="table-wrap"><table><thead><tr><th class="num">№</th><th>Время</th><th>Пользователь</th><th>Адрес</th><th>Событие</th><th>Объект</th><th>Результат</th><th>Подробности</th></tr></thead><tbody>
+{{range .Rows}}<tr><td class="num">{{.Seq}}</td><td>{{dt .Time}}</td><td class="mono">{{.Login}}</td><td class="mono">{{.IP}}</td><td>{{.Event}}</td><td>{{.Object}}</td>
+<td>{{if .OK}}<span class="tag ok">успех</span>{{else}}<span class="tag warn">отказ</span>{{end}}</td><td class="muted">{{.Detail}}</td></tr>
+{{else}}<tr><td colspan="8" class="muted">Записей нет.</td></tr>{{end}}
+</tbody></table></div>
+{{end}}

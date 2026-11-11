@@ -1,0 +1,34 @@
+{{define "title"}}{{.U.FullName}}{{end}}
+{{define "content"}}
+<a class="ghost-link" href="/admin/users">← Пользователи</a>
+<h2>{{.U.FullName}}</h2>
+{{if .TempPassword}}
+<div class="alert alert-ok"><strong>Временный пароль (показывается один раз):</strong>
+  <div class="secret">{{.TempPassword}}</div>
+  Передайте его пользователю по защищённому каналу. При первом входе система потребует задать собственный пароль.</div>
+{{end}}
+<form method="post" action="/admin/users/{{.U.ID}}" class="form-grid">{{template "csrf" .}}
+  <label>Логин<input type="text" value="{{.U.Login}}" disabled></label>
+  <label>ФИО<input type="text" name="name" value="{{.U.FullName}}" required maxlength="200"></label>
+  <label>Роль<select name="role"><option value="student" {{if eq .U.Role "student"}}selected{{end}}>Учащийся</option><option value="teacher" {{if eq .U.Role "teacher"}}selected{{end}}>Преподаватель</option><option value="admin" {{if eq .U.Role "admin"}}selected{{end}}>Администратор</option></select></label>
+  <label>Группа<select name="group"><option value="">—</option>{{range .Groups}}<option value="{{.ID}}" {{if eq .ID $.U.GroupID}}selected{{end}}>{{.Name}}</option>{{end}}</select></label>
+  <label class="full">Эл. почта<input type="email" name="email" value="{{.U.Email}}" maxlength="200"></label>
+  <label class="check full"><input type="checkbox" name="disabled" value="1" {{if .U.Disabled}}checked{{end}}>Учётная запись отключена (вход запрещён, данные сохраняются)</label>
+  {{if .Locked}}<label class="check full"><input type="checkbox" name="unlock" value="1">Снять временную блокировку (до {{dt .U.LockedUntil}})</label>{{end}}
+  {{if .U.TOTPEnabled}}<label class="check full"><input type="checkbox" name="reset_mfa" value="1">Сбросить двухфакторную аутентификацию (утеряно устройство)</label>{{end}}
+  <div class="full"><button class="primary-btn" type="submit">Сохранить</button></div>
+</form>
+<h3>Сведения</h3>
+<div class="glass-subcard"><dl class="kv">
+  <dt>Создана</dt><dd>{{dt .U.Created}}</dd>
+  <dt>Последний вход</dt><dd>{{dt .U.LastLogin}} {{.U.LastIP}}</dd>
+  <dt>Пароль изменён</dt><dd>{{dt .U.PassChanged}}{{if .U.MustChange}} <span class="tag warn">требуется смена</span>{{end}}</dd>
+  <dt>Согласие на обработку ПДн</dt><dd>{{if zero .U.Consent}}не получено{{else}}{{dt .U.Consent}}{{end}}</dd>
+  <dt>Активных сеансов</dt><dd>{{.Sessions}}</dd>
+</dl></div>
+<h3>Пароль и удаление</h3>
+<div class="row">
+  <form method="post" action="/admin/users/{{.U.ID}}/reset" data-confirm="Выдать новый временный пароль? Текущий пароль и все сеансы пользователя перестанут действовать.">{{template "csrf" .}}<button class="soft-btn" type="submit">Сбросить пароль</button></form>
+  <form method="post" action="/admin/users/{{.U.ID}}/delete" data-confirm="Удалить учётную запись и все связанные персональные данные (оценки, работы, портфолио)? Действие необратимо.">{{template "csrf" .}}<button class="danger-btn" type="submit">Удалить учётную запись и данные</button></form>
+</div>
+{{end}}

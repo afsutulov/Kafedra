@@ -1,0 +1,49 @@
+{{define "title"}}{{.Item.Title}}{{end}}
+{{define "content"}}
+<div class="section-header">
+  <div><a class="ghost-link" href="/courses/{{.Course.ID}}">← {{.Course.Title}}</a><h2>Задание: {{.Item.Title}}</h2></div>
+  {{if .Manage}}<a class="soft-btn link-btn" href="/items/{{.Item.ID}}/edit">Редактировать</a>{{end}}
+</div>
+{{if not .Item.Visible}}<div class="alert alert-info">Черновик: учащиеся не видят это задание.</div>{{end}}
+<p>Максимальный балл: <strong>{{num .Item.MaxPoints}}</strong>{{if not (zero .Item.CloseAt)}} · срок сдачи: <strong>{{dt .Item.CloseAt}}</strong>{{if .Overdue}} <span class="tag warn">срок истёк</span>{{end}}{{end}}</p>
+<article class="prose">{{.Body}}</article>
+{{template "files" .Files}}
+
+{{if .Manage}}
+<h3>Сданные работы</h3>
+{{range .Rows}}
+<div class="question">
+  <div class="post-head"><strong>{{.User.FullName}}</strong><span class="muted">{{index $.GroupNames .User.GroupID}}</span></div>
+  {{if .Sub}}
+    <p class="muted">Сдано {{dt .Sub.Submitted}}{{if .Sub.Late}} <span class="tag warn">после срока</span>{{end}}{{if .Sub.Graded}} <span class="tag ok">оценено: {{num .Sub.Points}}</span>{{end}}</p>
+    {{if .Sub.Text}}<pre class="block">{{.Sub.Text}}</pre>{{end}}
+    {{if .File}}<p class="file-line"><span class="file-ext">{{.File.Ext}}</span><a href="/files/{{.File.ID}}">{{.File.Name}}</a><span class="muted">{{size .File.Size}}</span></p>{{end}}
+    <form method="post" action="/submissions/{{.Sub.ID}}/grade" class="row">{{template "csrf" $}}
+      <input type="number" name="points" min="0" max="{{$.Item.MaxPoints}}" step="0.1" value="{{if .Sub.Graded}}{{.Sub.Points}}{{end}}" required placeholder="Баллы" aria-label="Баллы" class="mono">
+      <input type="text" name="comment" value="{{.Sub.Comment}}" placeholder="Комментарий для учащегося" maxlength="2000" aria-label="Комментарий">
+      <button class="primary-btn" type="submit">{{if .Sub.Graded}}Изменить оценку{{else}}Оценить{{end}}</button>
+    </form>
+  {{else}}<p class="muted">Работа не сдана.</p>{{end}}
+</div>
+{{else}}<p class="muted">В группах курса нет учащихся.</p>{{end}}
+{{else}}
+<h3>Моя работа</h3>
+{{if .Sub}}
+  <div class="glass-subcard">
+    <p class="muted">Отправлено {{dt .Sub.Submitted}}{{if .Sub.Late}} <span class="tag warn">после срока</span>{{end}}</p>
+    {{if .Sub.Text}}<pre class="block">{{.Sub.Text}}</pre>{{end}}
+    {{if .SubFile}}<p class="file-line"><span class="file-ext">{{.SubFile.Ext}}</span><a href="/files/{{.SubFile.ID}}">{{.SubFile.Name}}</a></p>{{end}}
+    {{if .Sub.Graded}}<p>Оценка: <strong>{{num .Sub.Points}} из {{num .Item.MaxPoints}}</strong></p>{{if .Sub.Comment}}<p>Комментарий преподавателя: {{.Sub.Comment}}</p>{{end}}
+    {{else}}<p><span class="tag">на проверке</span> До выставления оценки работу можно отправить заново.</p>{{end}}
+  </div>
+{{end}}
+{{if not (and .Sub .Sub.Graded)}}
+<form method="post" action="/items/{{.Item.ID}}/submit" enctype="multipart/form-data" class="stack-form">{{template "csrf" .}}
+  <label>Текст ответа (решение, ссылка на репозиторий, пояснения)<textarea name="text" class="code" rows="8" maxlength="50000">{{if .Sub}}{{.Sub.Text}}{{end}}</textarea></label>
+  <label>Файл (отчёт, архив с исходным кодом)<input type="file" name="file"></label>
+  {{if .Overdue}}<div class="alert alert-error">Срок сдачи истёк: работа будет принята с отметкой «после срока».</div>{{end}}
+  <div class="row"><button class="primary-btn" type="submit">{{if .Sub}}Отправить заново{{else}}Отправить на проверку{{end}}</button></div>
+</form>
+{{end}}
+{{end}}
+{{end}}

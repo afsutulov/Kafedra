@@ -1,0 +1,14 @@
+{{define "title"}}Подтверждение входа{{end}}
+{{define "content"}}
+<h2>Подтверждение входа</h2>
+<p>Введите шестизначный код из приложения-аутентификатора.</p>
+{{if .Error}}<div class="alert alert-error" role="alert">{{.Error}}</div>{{end}}
+<form method="post" action="/mfa" class="stack-form glass-subcard">
+  {{template "csrf" .}}
+  <label>Одноразовый код
+    <input type="text" name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required autofocus autocomplete="one-time-code">
+  </label>
+  <div class="row"><button class="primary-btn" type="submit">Подтвердить</button></div>
+</form>
+<p class="note">Если устройство утеряно, обратитесь к администратору системы для сброса второго фактора.</p>
+{{end}}

@@ -1,0 +1,94 @@
+{{define "title"}}{{.Course.Title}}{{end}}
+{{define "content"}}
+{{template "coursetabs" .}}
+
+{{if eq .Tab "materials"}}
+  {{if .Course.Description}}<div class="prose">{{.Desc}}</div>{{end}}
+  {{if .Total}}<p><progress max="{{.Total}}" value="{{.Done}}"></progress><span class="muted">Выполнено {{.Done}} из {{.Total}}</span></p>{{end}}
+  {{range .Sections}}{{$sec := .Section}}
+  <h3>{{.Section.Title}}</h3>
+  <ul class="items">
+    {{range .Items}}
+    <li class="{{if not .Item.Visible}}draft{{end}}">
+      <span class="kind {{.Item.Kind}}">{{kind .Item.Kind}}</span>
+      <a class="title" href="/items/{{.Item.ID}}">{{.Item.Title}}</a>
+      {{if not .Item.Visible}}<span class="tag">черновик</span>{{end}}
+      {{if not (zero .Item.CloseAt)}}<span class="muted">до {{dt .Item.CloseAt}}</span>{{end}}
+      {{if .Status}}<span class="tag ok">{{.Status}}</span>{{end}}
+      {{if $.Manage}}
+      <form method="post" action="/items/{{.Item.ID}}/move" class="inline">{{template "csrf" $}}<input type="hidden" name="dir" value="up"><button class="ghost-btn small" type="submit" title="Выше" aria-label="Переместить выше">↑</button></form>
+      <form method="post" action="/items/{{.Item.ID}}/move" class="inline">{{template "csrf" $}}<input type="hidden" name="dir" value="down"><button class="ghost-btn small" type="submit" title="Ниже" aria-label="Переместить ниже">↓</button></form>
+      <a class="ghost-btn small" href="/items/{{.Item.ID}}/edit">Изменить</a>
+      {{end}}
+    </li>
+    {{else}}<li class="draft"><span class="muted">В разделе пока нет материалов.</span></li>{{end}}
+  </ul>
+  {{if and $.Manage $sec.ID}}
+  <form method="post" action="/courses/{{$.Course.ID}}/items" class="row">{{template "csrf" $}}
+    <input type="hidden" name="section" value="{{$sec.ID}}">
+    <select name="kind" aria-label="Вид материала"><option value="lesson">Лекция (страница)</option><option value="file">Файл (PDF, презентация, видео)</option><option value="test">Тест</option><option value="task">Задание</option></select>
+    <input type="text" name="title" placeholder="Название нового материала" required maxlength="300" aria-label="Название">
+    <button class="soft-btn" type="submit">Добавить</button>
+  </form>
+  {{end}}
+  {{end}}
+  {{if .Manage}}
+  <details><summary>Разделы курса</summary>
+    {{range .Course.Sections}}
+    <form method="post" action="/courses/{{$.Course.ID}}/sections" class="row">{{template "csrf" $}}
+      <input type="hidden" name="sid" value="{{.ID}}"><input type="text" name="title" value="{{.Title}}" required maxlength="200" aria-label="Название раздела">
+      <button class="ghost-btn small" type="submit">Переименовать</button>
+      <button class="danger-btn small" type="submit" name="delete" value="1">Удалить раздел</button>
+    </form><br>
+    {{end}}
+    <form method="post" action="/courses/{{.Course.ID}}/sections" class="row">{{template "csrf" .}}
+      <input type="text" name="title" placeholder="Название нового раздела" required maxlength="200" aria-label="Новый раздел"><button class="soft-btn" type="submit">Добавить раздел</button>
+    </form>
+    <p class="note">При удалении раздела его материалы сохраняются и отображаются в блоке «Без раздела».</p>
+  </details>
+  {{end}}
+{{end}}
+
+{{if eq .Tab "news"}}
+  {{if .Manage}}
+  <details><summary>Новое объявление</summary>
+  <form method="post" action="/courses/{{.Course.ID}}/news" class="stack-form">{{template "csrf" .}}
+    <label>Заголовок<input type="text" name="title" required maxlength="200"></label>
+    <label>Текст (поддерживается разметка Markdown)<textarea name="body" maxlength="20000"></textarea></label>
+    <div class="row"><button class="primary-btn" type="submit">Опубликовать</button></div>
+  </form></details>
+  {{end}}
+  {{if not .News}}<p class="muted">Объявлений нет.</p>{{end}}
+  {{range .News}}
+  <div class="post"><div class="post-head"><strong>{{.News.Title}}</strong><span class="muted">{{.Author}} · {{dt .News.Created}}</span></div>
+    <div class="prose">{{.Body}}</div>
+    {{if $.Manage}}<form method="post" action="/news/{{.News.ID}}/delete" data-confirm="Удалить объявление?">{{template "csrf" $}}<button class="danger-btn small" type="submit">Удалить</button></form>{{end}}
+  </div>
+  {{end}}
+{{end}}
+
+{{if eq .Tab "talk"}}
+  <form method="post" action="/courses/{{.Course.ID}}/posts" class="stack-form glass-subcard">{{template "csrf" .}}
+    <label>Вопрос или сообщение участникам курса<textarea name="body" required maxlength="5000"></textarea></label>
+    <div class="row"><button class="primary-btn" type="submit">Отправить</button></div>
+  </form>
+  {{range .Posts}}
+  <div class="post"><div class="post-head"><span><strong>{{.Author}}</strong>{{if ne .Role "student"}} <span class="tag">{{role .Role}}</span>{{end}}</span><span class="muted">{{dt .Post.Created}}</span></div>
+    <div class="body">{{.Post.Body}}</div>
+    {{if or .Mine $.Manage}}<form method="post" action="/posts/{{.Post.ID}}/delete" data-confirm="Удалить сообщение?">{{template "csrf" $}}<button class="danger-btn small" type="submit">Удалить</button></form>{{end}}
+  </div>
+  {{else}}<p class="muted">Сообщений пока нет.</p>{{end}}
+{{end}}
+
+{{if eq .Tab "people"}}
+  <h3>Преподаватели</h3>
+  <ul>{{range .Teachers}}<li>{{.FullName}}{{if .Email}} — <a href="mailto:{{.Email}}">{{.Email}}</a>{{end}}</li>{{else}}<li class="muted">не назначены</li>{{end}}</ul>
+  {{if .Manage}}
+  <h3>Учащиеся</h3>
+  <div class="table-wrap"><table><thead><tr><th>ФИО</th><th>Группа</th><th>Последний вход</th><th></th></tr></thead><tbody>
+  {{range .Students}}<tr><td>{{.FullName}}</td><td>{{index $.GroupNames .GroupID}}</td><td>{{dt .LastLogin}}</td><td><a href="/portfolio?user={{.ID}}">Портфолио</a></td></tr>
+  {{else}}<tr><td colspan="4" class="muted">Курсу не назначены группы либо в группах нет учащихся.</td></tr>{{end}}
+  </tbody></table></div>
+  {{end}}
+{{end}}
+{{end}}

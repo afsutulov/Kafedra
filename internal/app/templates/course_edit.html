@@ -1,0 +1,25 @@
+{{define "title"}}Настройки курса{{end}}
+{{define "content"}}
+<a class="ghost-link" href="/courses/{{.Course.ID}}">← К курсу</a>
+<h2>Настройки курса</h2>
+<form method="post" action="/courses/{{.Course.ID}}/edit" class="stack-form">{{template "csrf" .}}
+  <label>Название<input type="text" name="title" value="{{.Course.Title}}" required maxlength="300"></label>
+  <label>Описание (аннотация, цели, порядок оценивания; поддерживается Markdown)<textarea name="description" maxlength="20000">{{.Course.Description}}</textarea></label>
+  <fieldset class="glass-subcard"><legend><strong>Группы, изучающие курс</strong></legend>
+    <div class="checks">{{range .Groups}}<label class="check"><input type="checkbox" name="groups" value="{{.ID}}" {{if has $.Course.GroupIDs .ID}}checked{{end}}>{{.Name}}</label>{{else}}<span class="muted">Группы ещё не созданы администратором.</span>{{end}}</div>
+  </fieldset>
+  {{if eq .Me.Role "admin"}}
+  <fieldset class="glass-subcard"><legend><strong>Преподаватели</strong></legend>
+    <div class="checks">{{range .Teachers}}<label class="check"><input type="checkbox" name="teachers" value="{{.ID}}" {{if has $.Course.TeacherIDs .ID}}checked{{end}}>{{.FullName}}</label>{{else}}<span class="muted">Нет учётных записей преподавателей.</span>{{end}}</div>
+  </fieldset>
+  <label class="check"><input type="checkbox" name="archived" value="1" {{if .Course.Archived}}checked{{end}}>Курс в архиве (скрыт от учащихся)</label>
+  {{end}}
+  <div class="row"><button class="primary-btn" type="submit">Сохранить</button></div>
+</form>
+{{if eq .Me.Role "admin"}}
+<h3>Удаление</h3>
+<form method="post" action="/courses/{{.Course.ID}}/delete" data-confirm="Удалить курс вместе со всеми материалами, оценками и расписанием? Действие необратимо.">{{template "csrf" .}}
+  <button class="danger-btn" type="submit">Удалить курс безвозвратно</button>
+</form>
+{{end}}
+{{end}}

@@ -1,0 +1,30 @@
+{{define "title"}}Пользователи{{end}}
+{{define "content"}}
+<div class="section-header"><h2>Пользователи</h2><span class="muted">Найдено: {{.Total}}</span></div>
+<form method="get" class="row">
+  <input type="search" name="q" value="{{.Q}}" placeholder="ФИО или логин" aria-label="Поиск">
+  <select name="role" aria-label="Роль"><option value="">Все роли</option><option value="student" {{if eq .Role "student"}}selected{{end}}>Учащиеся</option><option value="teacher" {{if eq .Role "teacher"}}selected{{end}}>Преподаватели</option><option value="admin" {{if eq .Role "admin"}}selected{{end}}>Администраторы</option></select>
+  <select name="group" aria-label="Группа"><option value="">Все группы</option>{{range .Groups}}<option value="{{.ID}}" {{if eq .ID $.Group}}selected{{end}}>{{.Name}}</option>{{end}}</select>
+  <button class="ghost-btn" type="submit">Найти</button>
+</form><br>
+<details><summary>Новая учётная запись</summary>
+<form method="post" action="/admin/users" class="form-grid">{{template "csrf" .}}
+  <label>Логин<input type="text" name="login" required pattern="[a-z0-9][a-z0-9._\-]{2,39}" maxlength="40" autocomplete="off"></label>
+  <label>ФИО<input type="text" name="name" required maxlength="200"></label>
+  <label>Роль<select name="role"><option value="student">Учащийся</option><option value="teacher">Преподаватель</option><option value="admin">Администратор</option></select></label>
+  <label>Группа (для учащихся)<select name="group"><option value="">—</option>{{range .Groups}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select></label>
+  <label class="full">Эл. почта<input type="email" name="email" maxlength="200"></label>
+  <div class="full"><button class="primary-btn" type="submit">Создать</button> <span class="note">Временный пароль будет показан один раз; при первом входе пользователь обязан его сменить.</span></div>
+</form></details>
+<details><summary>Импорт списка из CSV</summary>
+<form method="post" action="/admin/users/import" enctype="multipart/form-data" class="stack-form">{{template "csrf" .}}
+  <label>Файл CSV (UTF-8, разделитель «;»)<input type="file" name="file" accept=".csv,.txt" required></label>
+  <p class="note">Столбцы: <span class="mono">логин;ФИО;роль;группа;почта</span>. Роль: student, teacher или admin (пусто — учащийся). Отсутствующие группы создаются. В ответ выгружается файл с временными паролями — передайте их пользователям и удалите файл.</p>
+  <div class="row"><button class="soft-btn" type="submit">Импортировать</button></div>
+</form></details>
+<div class="table-wrap"><table><thead><tr><th>ФИО</th><th>Логин</th><th>Роль</th><th>Группа</th><th>Последний вход</th><th>Состояние</th></tr></thead><tbody>
+{{range .Users}}<tr><td><a href="/admin/users/{{.ID}}">{{.FullName}}</a></td><td class="mono">{{.Login}}</td><td>{{role .Role}}</td><td>{{index $.GroupNames .GroupID}}</td><td>{{dt .LastLogin}}</td>
+<td>{{if .Disabled}}<span class="tag warn">отключена</span>{{else if .LockedUntil.After $.Now}}<span class="tag warn">заблокирована</span>{{else}}<span class="tag ok">активна</span>{{end}}{{if .TOTPEnabled}} <span class="tag">2ФА</span>{{end}}</td></tr>
+{{else}}<tr><td colspan="6" class="muted">Никого не найдено.</td></tr>{{end}}
+</tbody></table></div>
+{{end}}

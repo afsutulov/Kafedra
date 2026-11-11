@@ -1,0 +1,18 @@
+{{define "title"}}Группы{{end}}
+{{define "content"}}
+<h2>Учебные группы</h2>
+<form method="post" action="/admin/groups" class="row glass-subcard">{{template "csrf" .}}
+  <input type="text" name="name" placeholder="Название новой группы, например ПИ-21" required maxlength="60" aria-label="Название">
+  <input type="text" name="note" placeholder="Примечание (направление, год набора)" maxlength="200" aria-label="Примечание">
+  <button class="primary-btn" type="submit">Добавить</button>
+</form>
+<div class="table-wrap"><table><thead><tr><th>Группа</th><th class="num">Учащихся</th><th></th></tr></thead><tbody>
+{{range .Rows}}<tr>
+  <td><form method="post" action="/admin/groups" class="row">{{template "csrf" $}}<input type="hidden" name="id" value="{{.Group.ID}}">
+    <input type="text" name="name" value="{{.Group.Name}}" required maxlength="60" aria-label="Название"><input type="text" name="note" value="{{.Group.Note}}" maxlength="200" aria-label="Примечание">
+    <button class="ghost-btn small" type="submit">Сохранить</button></form></td>
+  <td class="num"><a href="/admin/users?group={{.Group.ID}}">{{.Count}}</a></td>
+  <td><form method="post" action="/admin/groups/{{.Group.ID}}/delete" data-confirm="Удалить группу?">{{template "csrf" $}}<button class="danger-btn small" type="submit">Удалить</button></form></td></tr>
+{{else}}<tr><td colspan="3" class="muted">Групп пока нет.</td></tr>{{end}}
+</tbody></table></div>
+{{end}}

@@ -1,0 +1,23 @@
+{{define "title"}}Вход — {{.Cfg.SystemName}}{{end}}
+{{define "content"}}
+<div class="login-shell">
+  <div class="login-card glass-card">
+    <div class="login-brand">
+      <img src="/static/logo.svg" alt="" class="login-logo">
+      <h1>{{.Cfg.SystemName}} — система управления обучением</h1>
+      {{if .Cfg.OrgName}}<div class="muted">{{.Cfg.OrgName}}</div>{{end}}
+    </div>
+    <form method="post" action="/login" class="login-form" autocomplete="on">
+      <label>Имя пользователя
+        <input type="text" name="login" required autofocus autocomplete="username" maxlength="40">
+      </label>
+      <label>Пароль
+        <input type="password" name="password" required autocomplete="current-password" maxlength="256">
+      </label>
+      {{if .Error}}<div class="alert alert-error" role="alert">{{.Error}}</div>{{end}}
+      <button type="submit" class="primary-btn">Войти</button>
+      {{if .Banner}}<p class="note">{{.Banner}}</p>{{end}}
+    </form>
+  </div>
+</div>
+{{end}}

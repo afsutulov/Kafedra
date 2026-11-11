@@ -1,0 +1,18 @@
+{{define "title"}}Курсы{{end}}
+{{define "content"}}
+<div class="section-header"><h2>{{if eq .Me.Role "admin"}}Все курсы{{else}}Мои курсы{{end}}</h2></div>
+{{if .CanCreate}}
+<details><summary>Создать курс</summary>
+<form method="post" action="/courses" class="row">{{template "csrf" .}}
+  <input type="text" name="title" placeholder="Название курса (дисциплины)" required maxlength="300" aria-label="Название курса">
+  <button class="primary-btn" type="submit">Создать</button>
+</form></details>
+{{end}}
+{{if not .Cards}}<p class="muted">Курсов пока нет.{{if eq .Me.Role "student"}} Курсы появятся, когда вашей группе назначат дисциплины.{{end}}</p>{{end}}
+<div class="grid">{{range .Cards}}
+  <a class="tile" href="/courses/{{.Course.ID}}"><h3>{{.Course.Title}}</h3>
+  <span class="muted">{{if .Teachers}}{{.Teachers}}{{else}}преподаватель не назначен{{end}}</span>
+  {{if .Course.Archived}}<span class="tag">в архиве</span>{{end}}
+  {{if .Total}}<progress max="{{.Total}}" value="{{.Done}}"></progress><span class="muted">Выполнено {{.Done}} из {{.Total}}</span>{{end}}</a>
+{{end}}</div>
+{{end}}

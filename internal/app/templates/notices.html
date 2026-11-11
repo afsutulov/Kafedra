@@ -1,0 +1,9 @@
+{{define "title"}}Уведомления{{end}}
+{{define "content"}}
+<h2>Уведомления</h2>
+{{if not .List}}<p class="muted">Уведомлений нет.</p>{{end}}
+{{range .List}}
+<div class="post"><div class="post-head"><span class="muted">{{dt .Created}}</span>{{if not .Read}}<span class="tag">новое</span>{{end}}</div>
+  <div>{{.Text}} {{if .Link}}<a href="{{.Link}}">Открыть</a>{{end}}</div></div>
+{{end}}
+{{end}}

@@ -1,0 +1,40 @@
+{{define "title"}}Журнал: {{.Course.Title}}{{end}}
+{{define "content"}}
+{{template "coursetabs" .}}
+<div class="section-header">
+  <form method="get" class="row">
+    <label for="group">Группа</label>
+    <select name="group" id="group">{{range .Course.GroupIDs}}<option value="{{.}}" {{if eq . $.Group}}selected{{end}}>{{index $.GroupNames .}}</option>{{end}}</select>
+    <button class="ghost-btn" type="submit">Показать</button>
+  </form>
+  <a class="ghost-btn link-btn" href="/courses/{{.Course.ID}}/journal.csv?group={{.Group}}">Выгрузить CSV</a>
+</div>
+{{if not .Course.GroupIDs}}<div class="alert alert-info">Курсу не назначены группы. Назначьте их в настройках курса.</div>{{end}}
+<form method="post" action="/courses/{{.Course.ID}}/grades">{{template "csrf" .}}<input type="hidden" name="group" value="{{.Group}}">
+<div class="table-wrap"><table class="journal">
+  <thead><tr><th>Учащийся</th>
+    {{range .G.Cols}}<th class="col">{{.Title}}<br><span class="muted">{{if eq .Kind "test"}}тест{{else if eq .Kind "task"}}задание{{else}}{{date .Date}}{{end}} · макс. {{num .Max}}</span></th>{{end}}
+    <th class="num">Итого<br><span class="muted">из {{num .G.Max}}</span></th><th class="num">%</th><th class="c">Оценка</th><th class="c">Посещ.</th></tr></thead>
+  <tbody>
+  {{range $r := .Rows}}<tr><td>{{$r.User.FullName}}</td>
+    {{range $.G.Cols}}<td class="num">{{if .Manual}}<input type="text" inputmode="decimal" name="g_{{.ID}}_{{$r.User.ID}}" value="{{pt $r.Points .ID}}" aria-label="{{.Title}}: {{$r.User.FullName}}">{{else}}{{pt $r.Points .ID}}{{end}}</td>{{end}}
+    <td class="num"><strong>{{num $r.Total}}</strong></td><td class="num">{{num $r.Percent}}</td><td class="c">{{$r.Mark}}</td><td class="c">{{if $r.Att.Total}}{{$r.Att.Present}}/{{$r.Att.Total}}{{end}}</td></tr>
+  {{else}}<tr><td colspan="6" class="muted">В группе нет учащихся.</td></tr>{{end}}
+  </tbody>
+</table></div>
+{{if .Rows}}<div class="row"><button class="primary-btn" type="submit">Сохранить оценки</button><span class="note">Баллы за тесты и задания подставляются автоматически; вручную заполняются созданные вами столбцы. Пустое поле — оценки нет.</span></div>{{end}}
+</form>
+
+<details><summary>Столбцы журнала</summary>
+  <form method="post" action="/courses/{{.Course.ID}}/columns" class="form-grid three">{{template "csrf" .}}
+    <label>Название (семинар, коллоквиум, активность)<input type="text" name="title" required maxlength="100"></label>
+    <label>Максимальный балл<input type="number" name="max_points" value="5" min="0" max="1000" step="0.5" required></label>
+    <label>Дата<input type="date" name="date"></label>
+    <div class="full"><button class="soft-btn" type="submit">Добавить столбец</button></div>
+  </form>
+  {{range .G.Cols}}{{if .Manual}}
+  <form method="post" action="/columns/{{.ID}}/delete" class="row" data-confirm="Удалить столбец «{{.Title}}» вместе с оценками?">{{template "csrf" $}}<span>{{.Title}} ({{date .Date}})</span><button class="danger-btn small" type="submit">Удалить</button></form>
+  {{end}}{{end}}
+</details>
+<p class="note">Оценка по шкале: «5» от {{.S.Grade5}}%, «4» от {{.S.Grade4}}%, «3» от {{.S.Grade3}}% (настраивается администратором). Посещаемость отмечается в расписании.</p>
+{{end}}

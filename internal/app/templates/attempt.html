@@ -1,0 +1,21 @@
+{{define "title"}}{{.Item.Title}} — тестирование{{end}}
+{{define "content"}}
+<h2>{{.Item.Title}}</h2>
+{{if .Remaining}}<div class="timer" id="timer" data-remaining="{{.Remaining}}" role="timer" aria-live="off">Осталось …</div>{{end}}
+<form method="post" action="/attempts/{{.At.ID}}/submit" id="attempt-form" data-save="/attempts/{{.At.ID}}/save" data-confirm="Завершить тест и отправить ответы? Изменить их после отправки нельзя.">
+  {{template "csrf" .}}
+  {{range $i, $q := .At.Questions}}{{$a := index $.At.Answers $q.ID}}
+  <fieldset class="question"><legend class="muted">Вопрос {{add $i 1}} из {{len $.At.Questions}} · {{num $q.Points}} б.{{if eq $q.Type "multi"}} · несколько ответов{{end}}</legend>
+    <div class="qtext">{{$q.Text}}</div>
+    {{if eq $q.Type "text"}}
+      <input type="text" name="q_{{$q.ID}}" value="{{$a.Text}}" maxlength="500" autocomplete="off" aria-label="Ответ">
+    {{else}}
+      {{range $j, $o := $q.Options}}
+      <label class="opt"><input type="{{if eq $q.Type "single"}}radio{{else}}checkbox{{end}}" name="q_{{$q.ID}}" value="{{$j}}" {{if hasInt $a.Opts $j}}checked{{end}}><span>{{$o.Text}}</span></label>
+      {{end}}
+    {{end}}
+  </fieldset>
+  {{end}}
+  <div class="row"><button class="primary-btn" type="submit">Завершить тест</button><span class="muted" id="save-status" aria-live="polite">Ответы сохраняются автоматически.</span></div>
+</form>
+{{end}}

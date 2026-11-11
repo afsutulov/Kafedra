@@ -1,0 +1,27 @@
+{{define "title"}}Портфолио{{end}}
+{{define "content"}}
+<h2>Электронное портфолио{{if not .Own}}: {{.Owner.FullName}}{{end}}</h2>
+<p class="muted">{{.Owner.FullName}}{{if .Group}} · группа {{.Group}}{{end}}</p>
+{{if .Own}}
+<details><summary>Добавить запись</summary>
+<form method="post" action="/portfolio" enctype="multipart/form-data" class="stack-form">{{template "csrf" .}}
+  <label>Название (проект, публикация, сертификат, участие в олимпиаде)<input type="text" name="title" required maxlength="200"></label>
+  <label>Описание<textarea name="description" rows="3" maxlength="5000"></textarea></label>
+  <label>Файл (необязательно)<input type="file" name="file"></label>
+  <div class="row"><button class="primary-btn" type="submit">Добавить</button></div>
+</form></details>
+{{end}}
+<h3>Достижения и работы</h3>
+{{range .Entries}}{{$f := index $.Files .ID}}
+<div class="post"><div class="post-head"><strong>{{.Title}}</strong><span class="muted">{{date .Created}}</span></div>
+  <div class="body">{{.Description}}</div>
+  {{if $f.ID}}<p class="file-line"><span class="file-ext">{{$f.Ext}}</span><a href="/files/{{$f.ID}}">{{$f.Name}}</a><span class="muted">{{size $f.Size}}</span></p>{{end}}
+  {{if $.Own}}<form method="post" action="/portfolio/{{.ID}}/delete" data-confirm="Удалить запись?">{{template "csrf" $}}<button class="danger-btn small" type="submit">Удалить</button></form>{{end}}
+</div>
+{{else}}<p class="muted">Записей пока нет.</p>{{end}}
+<h3>Оценённые работы по курсам</h3>
+<div class="table-wrap"><table><thead><tr><th>Курс</th><th>Работа</th><th class="num">Баллы</th><th>Дата оценки</th></tr></thead><tbody>
+{{range .Works}}<tr><td>{{.Course}}</td><td>{{.Title}}</td><td class="num">{{num .Points}} / {{num .Max}}</td><td>{{date .At}}</td></tr>
+{{else}}<tr><td colspan="4" class="muted">Оценённых работ пока нет.</td></tr>{{end}}
+</tbody></table></div>
+{{end}}

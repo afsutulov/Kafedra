@@ -1,0 +1,46 @@
+{{define "title"}}Настройки{{end}}
+{{define "content"}}
+<h2>Настройки системы</h2>
+<form method="post" action="/admin/settings" class="stack-form">{{template "csrf" .}}
+  <h3>Парольная политика</h3>
+  <div class="form-grid three">
+    <label>Минимальная длина<input type="number" name="pw_min_len" value="{{.S.PwMinLen}}" min="8" max="64"></label>
+    <label>Не повторять последних паролей<input type="number" name="pw_history" value="{{.S.PwHistory}}" min="0" max="24"></label>
+    <label>Срок действия, дней (0 — бессрочно)<input type="number" name="pw_max_age" value="{{.S.PwMaxAgeDays}}" min="0" max="730"></label>
+  </div>
+  <div class="checks">
+    <label class="check"><input type="checkbox" name="pw_upper" value="1" {{if .S.PwUpper}}checked{{end}}>Заглавные буквы</label>
+    <label class="check"><input type="checkbox" name="pw_lower" value="1" {{if .S.PwLower}}checked{{end}}>Строчные буквы</label>
+    <label class="check"><input type="checkbox" name="pw_digit" value="1" {{if .S.PwDigit}}checked{{end}}>Цифры</label>
+    <label class="check"><input type="checkbox" name="pw_symbol" value="1" {{if .S.PwSymbol}}checked{{end}}>Специальные символы</label>
+  </div>
+  <h3>Вход и сеансы</h3>
+  <div class="form-grid three">
+    <label>Неудачных попыток до блокировки<input type="number" name="lock_attempts" value="{{.S.LockAttempts}}" min="3" max="20"></label>
+    <label>Длительность блокировки, мин<input type="number" name="lock_minutes" value="{{.S.LockMinutes}}" min="1" max="1440"></label>
+    <label>Завершать сеанс при бездействии, мин<input type="number" name="idle_minutes" value="{{.S.IdleMinutes}}" min="5" max="480"></label>
+    <label>Предельная длительность сеанса, ч<input type="number" name="session_hours" value="{{.S.SessionHours}}" min="1" max="72"></label>
+    <label>Одновременных сеансов на пользователя<input type="number" name="max_sessions" value="{{.S.MaxSessions}}" min="1" max="20"></label>
+    <label>Двухфакторная аутентификация обязательна<select name="mfa_roles">
+      <option value="none" {{if eq .S.MFARoles "none"}}selected{{end}}>ни для кого (по желанию)</option>
+      <option value="admin" {{if eq .S.MFARoles "admin"}}selected{{end}}>для администраторов</option>
+      <option value="staff" {{if eq .S.MFARoles "staff"}}selected{{end}}>для администраторов и преподавателей</option>
+      <option value="all" {{if eq .S.MFARoles "all"}}selected{{end}}>для всех</option></select></label>
+  </div>
+  <label>Предупреждение на странице входа<input type="text" name="banner" value="{{.S.Banner}}" maxlength="500"></label>
+  <h3>Учебный процесс</h3>
+  <div class="form-grid three">
+    <label>Оценка «5» от, %<input type="number" name="grade5" value="{{.S.Grade5}}" min="1" max="100"></label>
+    <label>Оценка «4» от, %<input type="number" name="grade4" value="{{.S.Grade4}}" min="1" max="100"></label>
+    <label>Оценка «3» от, %<input type="number" name="grade3" value="{{.S.Grade3}}" min="1" max="100"></label>
+  </div>
+  <label class="check"><input type="checkbox" name="rating_names" value="1" {{if .S.RatingNames}}checked{{end}}>Показывать учащимся ФИО одногруппников в рейтинге (иначе видно только собственное место)</label>
+  <label class="check"><input type="checkbox" name="teacher_courses" value="1" {{if .S.TeacherCourses}}checked{{end}}>Преподаватели могут создавать курсы самостоятельно</label>
+  <h3>Файлы</h3>
+  <div class="form-grid">
+    <label>Максимальный размер файла, МБ<input type="number" name="max_upload" value="{{.S.MaxUploadMB}}" min="1" max="4096"></label>
+    <label>Разрешённые расширения (через пробел)<input type="text" name="allowed_ext" value="{{.S.AllowedExt}}" maxlength="1000"></label>
+  </div>
+  <div class="row"><button class="primary-btn" type="submit">Сохранить настройки</button></div>
+</form>
+{{end}}

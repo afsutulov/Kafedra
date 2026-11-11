@@ -1,0 +1,38 @@
+{{define "title"}}{{.Item.Title}}{{end}}
+{{define "content"}}
+<div class="section-header">
+  <div><a class="ghost-link" href="/courses/{{.Course.ID}}">← {{.Course.Title}}</a><h2>Тест: {{.Item.Title}}</h2></div>
+  {{if .Manage}}<span class="row"><a class="soft-btn link-btn" href="/items/{{.Item.ID}}/results">Результаты ({{.AttemptCount}})</a><a class="ghost-btn link-btn" href="/items/{{.Item.ID}}/edit">Редактировать</a></span>{{end}}
+</div>
+{{if not .Item.Visible}}<div class="alert alert-info">Черновик: учащиеся не видят этот тест.</div>{{end}}
+<div class="glass-subcard"><dl class="kv">
+  <dt>Вопросов</dt><dd>{{if .Manage}}{{len .Item.Questions}}{{if .Item.PoolSize}} (в попытке — {{.Item.PoolSize}}){{end}}{{else}}{{.QCount}}{{end}}</dd>
+  <dt>Время</dt><dd>{{if .Item.TimeLimit}}{{.Item.TimeLimit}} мин{{else}}не ограничено{{end}}</dd>
+  <dt>Попыток</dt><dd>{{if .Item.MaxAttempts}}{{.Item.MaxAttempts}}{{else}}не ограничено{{end}}</dd>
+  <dt>Баллов в журнал</dt><dd>{{num .Item.MaxPoints}} (в зачёт идёт лучшая попытка)</dd>
+  <dt>Порог зачёта</dt><dd>{{.Item.PassPercent}}%</dd>
+  {{if not (zero .Item.OpenAt)}}<dt>Открыт с</dt><dd>{{dt .Item.OpenAt}}</dd>{{end}}
+  {{if not (zero .Item.CloseAt)}}<dt>Закрыт после</dt><dd>{{dt .Item.CloseAt}}</dd>{{end}}
+</dl></div>
+
+{{if not .Manage}}
+  {{if .HasBest}}<p>Ваш лучший результат: <strong>{{num .Best}} из {{num .Item.MaxPoints}}</strong></p>{{end}}
+  {{if .Active}}
+    <div class="alert alert-info">У вас есть незавершённая попытка.</div>
+    <a class="primary-btn link-btn" href="/attempts/{{.Active.ID}}">Продолжить тест</a>
+  {{else if .Open}}
+    <form method="post" action="/items/{{.Item.ID}}/start" data-confirm="Начать тест?{{if .Item.TimeLimit}} Время пойдёт сразу и не останавливается при закрытии страницы.{{end}}">{{template "csrf" .}}
+      <button class="primary-btn" type="submit">Начать тест</button>
+      {{if .Item.MaxAttempts}}<span class="muted">Осталось попыток: {{.Left}}</span>{{end}}
+    </form>
+  {{else}}<div class="alert alert-info">{{.Why}}</div>{{end}}
+  {{if .Attempts}}
+  <h3>Мои попытки</h3>
+  <div class="table-wrap"><table><thead><tr><th>Начата</th><th>Завершена</th><th class="num">Результат</th><th class="num">В журнал</th><th></th></tr></thead><tbody>
+  {{range .Attempts}}<tr><td>{{dt .Started}}</td><td>{{if .Done}}{{dt .Finished}}{{else}}идёт{{end}}</td>
+    <td class="num">{{if .Done}}{{num .Score}} / {{num .MaxScore}}{{end}}</td><td class="num">{{if .Done}}{{num .Points}}{{end}}</td>
+    <td><a href="/attempts/{{.ID}}">{{if .Done}}Подробнее{{else}}Продолжить{{end}}</a></td></tr>{{end}}
+  </tbody></table></div>
+  {{end}}
+{{end}}
+{{end}}

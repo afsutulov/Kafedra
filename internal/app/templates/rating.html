@@ -1,0 +1,14 @@
+{{define "title"}}Рейтинг{{end}}
+{{define "content"}}
+<h2>Рейтинг</h2>
+<form method="get" class="row">
+  <select name="course" aria-label="Курс"><option value="">Все курсы</option>{{range .Courses}}<option value="{{.ID}}" {{if eq .ID $.SelCourse}}selected{{end}}>{{.Title}}</option>{{end}}</select>
+  {{if ne .Me.Role "student"}}<select name="group" aria-label="Группа"><option value="">Все группы</option>{{range .Groups}}<option value="{{.ID}}" {{if eq .ID $.SelGroup}}selected{{end}}>{{.Name}}</option>{{end}}</select>{{end}}
+  <button class="ghost-btn" type="submit">Показать</button>
+</form>
+<p class="note">Рейтинг — доля набранных баллов от максимально возможных по выбранным курсам.{{if eq .Me.Role "student"}} Показана ваша группа.{{end}}</p>
+<div class="table-wrap"><table><thead><tr><th class="num">Место</th><th>Учащийся</th><th>Группа</th><th class="num">Баллы</th><th class="num">%</th><th></th></tr></thead><tbody>
+{{range .Rows}}<tr class="{{if .Me}}me{{end}}"><td class="num">{{.Place}}</td><td>{{.Name}}{{if .Me}} (вы){{end}}</td><td>{{.Group}}</td><td class="num">{{num .Points}} / {{num .Max}}</td><td class="num">{{num .Percent}}</td><td><progress max="100" value="{{.Percent}}"></progress></td></tr>
+{{else}}<tr><td colspan="6" class="muted">Данных для рейтинга пока нет.</td></tr>{{end}}
+</tbody></table></div>
+{{end}}

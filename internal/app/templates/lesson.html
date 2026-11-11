@@ -1,0 +1,14 @@
+{{define "title"}}{{.Item.Title}}{{end}}
+{{define "content"}}
+<div class="section-header">
+  <div><a class="ghost-link" href="/courses/{{.Course.ID}}">← {{.Course.Title}}</a><h2>{{.Item.Title}}</h2></div>
+  {{if .Manage}}<a class="soft-btn link-btn" href="/items/{{.Item.ID}}/edit">Редактировать</a>{{end}}
+</div>
+{{if not .Item.Visible}}<div class="alert alert-info">Черновик: учащиеся не видят этот материал.</div>{{end}}
+<article class="prose">{{.Body}}</article>
+{{template "files" .Files}}
+<div class="pager">
+  <span>{{if .Prev}}<a class="ghost-btn link-btn" href="/items/{{.Prev.ID}}">← {{.Prev.Title}}</a>{{end}}</span>
+  <span>{{if .Next}}<a class="soft-btn link-btn" href="/items/{{.Next.ID}}">{{.Next.Title}} →</a>{{end}}</span>
+</div>
+{{end}}

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{block "title" .}}{{.Cfg.SystemName}}{{end}}</title>
+  <link rel="icon" type="image/svg+xml" href="/static/logo.svg">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+{{if .Me}}
+<div class="shell">
+  <header class="topbar">
+    <div class="topbar-left">
+      <img src="/static/logo.svg" alt="" class="header-logo">
+      <span class="header-title">{{.Cfg.SystemName}} — система управления обучением{{if .Cfg.OrgName}}<br>{{.Cfg.OrgName}}{{end}}</span>
+    </div>
+    <div class="topbar-right">
+      <button type="button" class="ghost-btn small" id="a11y-toggle" title="Версия для слабовидящих">Аа</button>
+      <a class="bell" href="/notices" title="Уведомления">Уведомления{{if .Unread}} <span class="badge">{{.Unread}}</span>{{end}}</a>
+      <span class="username">{{.Me.FullName}}<br><small>{{role .Me.Role}}</small></span>
+      <form method="post" action="/logout">{{template "csrf" .}}<button class="ghost-btn" type="submit">Выход</button></form>
+    </div>
+  </header>
+  <main class="main-layout">
+    <nav class="sidebar glass-card" aria-label="Разделы">
+      {{range .Nav}}<a class="menu-item{{if active $.Path .URL}} active{{end}}" href="{{.URL}}">{{.Title}}</a>{{end}}
+    </nav>
+    <section class="content glass-card">
+      {{if .Flash}}<div class="alert {{if eq .FlashKind "e"}}alert-error{{else}}alert-ok{{end}}" role="status">{{.Flash}}</div>{{end}}
+      {{template "content" .}}
+    </section>
+  </main>
+  <footer class="footer">{{.Cfg.SystemName}}, версия {{.Version}} · {{if .Cfg.OrgName}}{{.Cfg.OrgName}} · {{end}}{{.Year}}</footer>
+</div>
+{{else}}
+{{template "content" .}}
+{{end}}
+</body>
+</html>
+{{define "csrf"}}<input type="hidden" name="csrf" value="{{.CSRF}}">{{end}}
+{{define "coursetabs"}}
+<div class="section-header">
+  <div><a class="ghost-link" href="/courses">← Все курсы</a><h2>{{.Course.Title}}{{if .Course.Archived}} <span class="tag">в архиве</span>{{end}}</h2></div>
+  {{if .Manage}}<a class="soft-btn link-btn" href="/courses/{{.Course.ID}}/edit">Настройки курса</a>{{end}}
+</div>
+<div class="tabs">
+  <a class="tab{{if eq .Tab "materials"}} active{{end}}" href="/courses/{{.Course.ID}}">Материалы</a>
+  <a class="tab{{if eq .Tab "news"}} active{{end}}" href="/courses/{{.Course.ID}}?tab=news">Объявления</a>
+  <a class="tab{{if eq .Tab "talk"}} active{{end}}" href="/courses/{{.Course.ID}}?tab=talk">Обсуждение</a>
+  <a class="tab{{if eq .Tab "people"}} active{{end}}" href="/courses/{{.Course.ID}}?tab=people">Участники</a>
+  {{if .Manage}}<a class="tab{{if eq .Tab "journal"}} active{{end}}" href="/courses/{{.Course.ID}}/journal">Журнал</a>{{end}}
+</div>
+{{end}}
+{{define "files"}}
+{{range .}}
+  {{if eq .Type "image"}}<figure class="attach"><img src="/files/{{.Meta.ID}}" alt="{{.Meta.Name}}" loading="lazy"><figcaption>{{.Meta.Name}}</figcaption></figure>
+  {{else if eq .Type "pdf"}}<div class="attach"><div class="attach-head"><strong>{{.Meta.Name}}</strong> <a href="/files/{{.Meta.ID}}?dl=1">Скачать ({{size .Meta.Size}})</a></div><iframe class="doc-frame" src="/files/{{.Meta.ID}}" title="{{.Meta.Name}}"></iframe></div>
+  {{else if eq .Type "video"}}<div class="attach"><div class="attach-head"><strong>{{.Meta.Name}}</strong></div><video controls preload="metadata" src="/files/{{.Meta.ID}}"></video></div>
+  {{else if eq .Type "audio"}}<div class="attach"><div class="attach-head"><strong>{{.Meta.Name}}</strong></div><audio controls preload="metadata" src="/files/{{.Meta.ID}}"></audio></div>
+  {{else if eq .Type "html"}}<div class="attach"><div class="attach-head"><strong>{{.Meta.Name}}</strong> <a href="/files/{{.Meta.ID}}?dl=1">Скачать</a></div><iframe class="doc-frame" sandbox src="/files/{{.Meta.ID}}" title="{{.Meta.Name}}"></iframe></div>
+  {{else}}<div class="attach file-line"><span class="file-ext">{{.Meta.Ext}}</span> <a href="/files/{{.Meta.ID}}">{{.Meta.Name}}</a> <span class="muted">{{size .Meta.Size}}</span></div>{{end}}
+{{end}}
+{{end}}

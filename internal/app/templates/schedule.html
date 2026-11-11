@@ -1,0 +1,32 @@
+{{define "title"}}Расписание{{end}}
+{{define "content"}}
+<div class="section-header"><h2>Расписание: {{date .From}} — {{date .To}}</h2>
+  <span class="row"><a class="ghost-btn link-btn" href="/schedule?w={{.Prev}}">← Неделя</a><a class="ghost-btn link-btn" href="/schedule">Сегодня</a><a class="ghost-btn link-btn" href="/schedule?w={{.Next}}">Неделя →</a>
+  <a class="ghost-btn link-btn" href="/schedule.ics" title="Файл для импорта в календарь">Календарь (.ics)</a></span></div>
+
+{{if .Courses}}
+<details><summary>Добавить занятие</summary>
+<form method="post" action="/schedule" class="form-grid three">{{template "csrf" .}}
+  <label class="full">Курс и группа<select name="target" required>{{range $c := .Courses}}{{range $c.GroupIDs}}<option value="{{$c.ID}}:{{.}}">{{$c.Title}} — {{index $.GroupNames .}}</option>{{end}}{{end}}</select></label>
+  <label>Вид занятия<select name="kind">{{range $k, $v := .Kinds}}<option value="{{$k}}">{{$v}}</option>{{end}}</select></label>
+  <label>Дата<input type="date" name="date" required></label>
+  <label>Аудитория или ссылка<input type="text" name="room" maxlength="100"></label>
+  <label>Начало<input type="time" name="from" required value="09:00"></label>
+  <label>Окончание<input type="time" name="to" required value="10:30"></label>
+  <label>Повторять еженедельно, недель<input type="number" name="weeks" value="1" min="1" max="30"></label>
+  <label class="full">Примечание<input type="text" name="note" maxlength="300"></label>
+  <div class="full"><button class="primary-btn" type="submit">Добавить</button></div>
+</form></details>
+{{end}}
+
+{{range .Days}}
+<div class="day {{if .Today}}today{{end}}"><h3>{{.Name}}, {{date .Date}}{{if .Today}} · сегодня{{end}}</h3>
+  {{range .Events}}
+  <div class="ev"><time>{{clock .Event.Start}}–{{clock .Event.End}}</time>
+    <div><strong>{{.Course}}</strong> · {{evkind .Event.Kind}}<br><span class="muted">{{.Group}}{{if .Event.Room}} · ауд. {{.Event.Room}}{{end}} · {{.Teacher}}{{if .Event.Note}} · {{.Event.Note}}{{end}}</span></div>
+    {{if .Mine}}<a class="ghost-btn small" href="/events/{{.Event.ID}}">Посещаемость</a>{{else}}<span></span>{{end}}
+  </div>
+  {{else}}<p class="muted">Занятий нет.</p>{{end}}
+</div>
+{{end}}
+{{end}}

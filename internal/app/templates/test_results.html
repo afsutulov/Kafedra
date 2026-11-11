@@ -1,0 +1,16 @@
+{{define "title"}}Результаты: {{.Item.Title}}{{end}}
+{{define "content"}}
+<a class="ghost-link" href="/items/{{.Item.ID}}">← {{.Item.Title}}</a>
+<h2>Результаты теста</h2>
+<p>Прошли тест: <strong>{{.Passed}}</strong> из {{len .Rows}} · средний балл: <strong>{{num .Avg}}</strong> из {{num .Item.MaxPoints}}</p>
+<div class="table-wrap"><table><thead><tr><th>Учащийся</th><th>Группа</th><th class="num">Лучший балл</th><th>Попытки</th></tr></thead><tbody>
+{{range .Rows}}<tr><td>{{.User.FullName}}</td><td>{{index $.GroupNames .User.GroupID}}</td><td class="num">{{if .HasBest}}{{num .Best}}{{else}}—{{end}}</td>
+<td>{{range .Attempts}}<div class="row">{{if .Done}}<a href="/attempts/{{.ID}}">{{dt .Started}}: {{num .Score}}/{{num .MaxScore}}</a>{{else}}<span class="muted">{{dt .Started}}: идёт</span>{{end}}
+  <form method="post" action="/attempts/{{.ID}}/annul" class="inline" data-confirm="Аннулировать попытку? Результат будет удалён, учащийся сможет пройти тест заново.">{{template "csrf" $}}<button class="danger-btn small" type="submit">Аннулировать</button></form></div>{{else}}<span class="muted">нет</span>{{end}}</td></tr>{{end}}
+</tbody></table></div>
+<h3>Анализ вопросов</h3>
+<p class="note">Доля полностью верных ответов. Вопросы с очень низкой долей стоит проверить на корректность формулировки.</p>
+<div class="table-wrap"><table><thead><tr><th>Вопрос</th><th class="num">Показан</th><th class="num">Верно</th><th class="num">%</th></tr></thead><tbody>
+{{range .Stats}}<tr><td>{{.Q.Text}}</td><td class="num">{{.Shown}}</td><td class="num">{{.Correct}}</td><td class="num">{{if .Shown}}{{pct .Correct .Shown}}{{else}}—{{end}}</td></tr>{{end}}
+</tbody></table></div>
+{{end}}

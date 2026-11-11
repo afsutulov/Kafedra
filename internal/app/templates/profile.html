@@ -1,0 +1,50 @@
+{{define "title"}}Профиль{{end}}
+{{define "content"}}
+<div class="section-header"><h2>Профиль</h2><a class="soft-btn link-btn" href="/password">Сменить пароль</a></div>
+<div class="glass-subcard">
+  <dl class="kv">
+    <dt>ФИО</dt><dd>{{.Me.FullName}}</dd>
+    <dt>Логин</dt><dd>{{.Me.Login}}</dd>
+    <dt>Роль</dt><dd>{{role .Me.Role}}</dd>
+    {{if .Group}}<dt>Группа</dt><dd>{{.Group}}</dd>{{end}}
+    {{if .Me.Email}}<dt>Эл. почта</dt><dd>{{.Me.Email}}</dd>{{end}}
+    <dt>Пароль изменён</dt><dd>{{dt .Me.PassChanged}}{{if .S.PwMaxAgeDays}} (срок действия {{.S.PwMaxAgeDays}} дн.){{end}}</dd>
+    <dt>Согласие на обработку ПДн</dt><dd>{{dt .Me.Consent}}</dd>
+  </dl>
+  <p class="note">Для изменения ФИО, группы или адреса почты обратитесь к администратору.</p>
+</div>
+
+<h3>Двухфакторная аутентификация</h3>
+<div class="glass-subcard">
+{{if .Me.TOTPEnabled}}
+  <p><span class="tag ok">подключена</span> При входе запрашивается одноразовый код из приложения-аутентификатора.</p>
+  {{if not .MFARequired}}
+  <form method="post" action="/profile/mfa/disable" class="row" data-confirm="Отключить двухфакторную аутентификацию?">
+    {{template "csrf" .}}
+    <input type="password" name="password" placeholder="Текущий пароль" required autocomplete="current-password" aria-label="Текущий пароль">
+    <button class="danger-btn" type="submit">Отключить</button>
+  </form>{{end}}
+{{else if .Secret}}
+  <p>1. Установите приложение-аутентификатор, поддерживающее стандарт TOTP (RFC 6238).<br>2. Добавьте в нём учётную запись вручную, указав ключ:</p>
+  <div class="secret">{{.Secret}}</div>
+  <p class="note">Параметры: тип «по времени», 6 цифр, период 30 секунд, алгоритм SHA-1. Ссылка для импорта: <span class="mono">{{.OTPAuth}}</span></p>
+  <form method="post" action="/profile/mfa/confirm" class="row">
+    {{template "csrf" .}}
+    <input type="text" name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required placeholder="Код из приложения" aria-label="Код из приложения">
+    <button class="primary-btn" type="submit">Подтвердить и включить</button>
+  </form>
+{{else}}
+  <p>{{if .MFARequired}}<span class="tag warn">обязательна для вашей роли</span>{{else}}<span class="tag">не подключена</span>{{end}} Второй фактор защищает учётную запись, даже если пароль стал известен посторонним.</p>
+  <form method="post" action="/profile/mfa/start">{{template "csrf" .}}<button class="primary-btn" type="submit">Подключить</button></form>
+{{end}}
+</div>
+
+<h3>Активные сеансы</h3>
+<div class="table-wrap"><table>
+  <thead><tr><th>Начат</th><th>Последняя активность</th><th>Адрес</th><th>Браузер</th><th></th></tr></thead>
+  <tbody>{{range .Sessions}}<tr>
+    <td>{{dt .Created}}</td><td>{{dt .Seen}}</td><td>{{.IP}}</td><td class="muted">{{.UA}}</td>
+    <td>{{if eq .ID $.SessID}}<span class="tag ok">текущий</span>{{else}}<form method="post" action="/profile/sessions/revoke" class="inline">{{template "csrf" $}}<input type="hidden" name="id" value="{{.ID}}"><button class="danger-btn small" type="submit">Завершить</button></form>{{end}}</td>
+  </tr>{{end}}</tbody>
+</table></div>
+{{end}}
