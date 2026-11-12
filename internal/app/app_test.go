@@ -404,7 +404,7 @@ func TestConfigAndOptionalMFA(t *testing.T) {
 	}
 	mustContain(t, body, "Корпоративный университет")
 	mustContain(t, body, "АО «Пример»")
-	mustContain(t, body, "© ООО «Рога и копыта»")
+	mustContain(t, body, "© ГБУ ПК «Центр информационного развития ПК»")
 	if strings.Contains(body, "версия") {
 		t.Fatal("в интерфейсе выводится номер версии")
 	}
