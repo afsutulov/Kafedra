@@ -274,27 +274,28 @@ type FileMeta struct {
 
 // Settings — настраиваемые администратором параметры.
 type Settings struct {
-	PwMinLen       int
-	PwUpper        bool
-	PwLower        bool
-	PwDigit        bool
-	PwSymbol       bool
-	PwHistory      int
-	PwMaxAgeDays   int
-	LockAttempts   int
-	LockMinutes    int
-	IdleMinutes    int
-	SessionHours   int
-	MaxSessions    int
-	MFARoles       string // none, admin, staff, all
-	Grade5         int
-	Grade4         int
-	Grade3         int
-	RatingNames    bool
-	AllowedExt     string
-	MaxUploadMB    int
-	Banner         string
-	TeacherCourses bool // преподаватели могут создавать курсы сами
+	PwMinLen       int    `json:"password_min_length"`
+	PwUpper        bool   `json:"password_need_upper"`
+	PwLower        bool   `json:"password_need_lower"`
+	PwDigit        bool   `json:"password_need_digit"`
+	PwSymbol       bool   `json:"password_need_symbol"`
+	PwHistory      int    `json:"password_history"`
+	PwMaxAgeDays   int    `json:"password_max_age_days"`
+	LockAttempts   int    `json:"lock_after_failed_attempts"`
+	LockMinutes    int    `json:"lock_minutes"`
+	IdleMinutes    int    `json:"session_idle_minutes"`
+	SessionHours   int    `json:"session_max_hours"`
+	MaxSessions    int    `json:"max_sessions_per_user"`
+	MFARoles       string `json:"mfa_required_for"`       // none, admin, staff, all
+	TOTPSkew       int    `json:"totp_time_window_steps"` // допуск расхождения часов для одноразовых кодов, шагов по 30 с
+	Grade5         int    `json:"grade5_from_percent"`
+	Grade4         int    `json:"grade4_from_percent"`
+	Grade3         int    `json:"grade3_from_percent"`
+	RatingNames    bool   `json:"rating_show_names"`
+	AllowedExt     string `json:"allowed_extensions"`
+	MaxUploadMB    int    `json:"max_upload_mb"`
+	Banner         string `json:"login_banner"`
+	TeacherCourses bool   `json:"teachers_create_courses"` // преподаватели могут создавать курсы сами
 }
 
 // DefaultSettings возвращает безопасные значения по умолчанию.
@@ -302,7 +303,7 @@ func DefaultSettings() Settings {
 	return Settings{
 		PwMinLen: 12, PwUpper: true, PwLower: true, PwDigit: true, PwSymbol: true,
 		PwHistory: 5, PwMaxAgeDays: 90, LockAttempts: 5, LockMinutes: 15,
-		IdleMinutes: 30, SessionHours: 12, MaxSessions: 3, MFARoles: "admin",
+		IdleMinutes: 30, SessionHours: 12, MaxSessions: 3, MFARoles: "none", TOTPSkew: 1,
 		Grade5: 85, Grade4: 70, Grade3: 50, RatingNames: false,
 		AllowedExt:     "pdf docx doc pptx ppt xlsx xls odt odp ods txt md csv png jpg jpeg gif webp mp4 webm mp3 ogg zip 7z html go py c cpp h java js ts sql json xml ipynb",
 		MaxUploadMB:    200,

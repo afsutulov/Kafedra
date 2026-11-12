@@ -717,7 +717,7 @@ func checkContent(ext string, head []byte) error {
 }
 
 func (a *App) filePath(id string) string {
-	return filepath.Join(a.Cfg.DataDir, "files", id[:2], id)
+	return filepath.Join(a.Cfg.DataPath(), "files", id[:2], id)
 }
 
 // storeFile проверяет и сохраняет файл в файловом хранилище.

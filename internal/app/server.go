@@ -27,20 +27,6 @@ import (
 //go:embed templates/*.html static/*
 var assets embed.FS
 
-// Config — параметры запуска (файл config.json).
-type Config struct {
-	Listen       string `json:"listen"`
-	DataDir      string `json:"data_dir"`
-	TLSCert      string `json:"tls_cert"`
-	TLSKey       string `json:"tls_key"`
-	Timezone     string `json:"timezone"`
-	OrgName      string `json:"org_name"`
-	SystemName   string `json:"system_name"`
-	TrustedProxy string `json:"trusted_proxy"`
-	BackupHour   int    `json:"backup_hour"` // час ежесуточного резервного копирования (-1 — отключено)
-	BackupKeep   int    `json:"backup_keep"` // сколько последних копий хранить
-}
-
 // App — экземпляр приложения.
 type App struct {
 	Cfg     Config
@@ -67,7 +53,7 @@ type App struct {
 	Notices   *store.Coll[Notice]
 	Sessions  *store.Coll[Session]
 	Files     *store.Coll[FileMeta]
-	SettingsC *store.Coll[Settings]
+	setMu     sync.RWMutex
 
 	tpl     map[string]*template.Template
 	started time.Time
@@ -94,27 +80,30 @@ func New(cfg Config, version string) (a *App, err error) {
 	if cfg.Timezone == "" {
 		cfg.Timezone = "Europe/Moscow"
 	}
-	if cfg.SystemName == "" {
-		cfg.SystemName = "Кафедра"
+	if cfg.PortalName == "" {
+		cfg.PortalName = "Учебный портал"
+	}
+	if cfg.Settings.PwMinLen == 0 { // конфигурация создана в коде без раздела settings
+		cfg.Settings = DefaultSettings()
 	}
 	loc, err := time.LoadLocation(cfg.Timezone)
 	if err != nil {
 		return nil, fmt.Errorf("часовой пояс %q: %w", cfg.Timezone, err)
 	}
-	for _, d := range []string{cfg.DataDir, filepath.Join(cfg.DataDir, "files"), filepath.Join(cfg.DataDir, "backup")} {
+	for _, d := range []string{cfg.DataPath(), filepath.Join(cfg.DataPath(), "files"), filepath.Join(cfg.DataPath(), "backup")} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return nil, err
 		}
 	}
-	keys, err := secure.LoadOrCreateKeys(filepath.Join(cfg.DataDir, "master.key"))
+	keys, err := secure.LoadOrCreateKeys(filepath.Join(cfg.DataPath(), "master.key"))
 	if err != nil {
 		return nil, err
 	}
-	db, err := store.Open(filepath.Join(cfg.DataDir, "db"))
+	db, err := store.Open(filepath.Join(cfg.DataPath(), "db"))
 	if err != nil {
 		return nil, err
 	}
-	audit, err := secure.OpenAudit(filepath.Join(cfg.DataDir, "audit"))
+	audit, err := secure.OpenAudit(cfg.AuditPath())
 	if err != nil {
 		return nil, err
 	}
@@ -136,12 +125,6 @@ func New(cfg Config, version string) (a *App, err error) {
 	a.Notices = must(store.Register[Notice](db, "notices"))
 	a.Sessions = must(store.Register[Session](db, "sessions"))
 	a.Files = must(store.Register[FileMeta](db, "files"))
-	a.SettingsC = must(store.Register[Settings](db, "settings"))
-	if _, ok := a.SettingsC.Get("main"); !ok {
-		if err := a.SettingsC.Put("main", DefaultSettings()); err != nil {
-			return nil, err
-		}
-	}
 	for _, w := range db.Warnings {
 		a.Audit.Log(secure.AuditRecord{Event: "хранилище: восстановление после сбоя", Detail: w, OK: true})
 	}
@@ -165,10 +148,23 @@ func (a *App) Close() {
 	a.Audit.Close()
 }
 
-// S возвращает текущие настройки.
+// S возвращает текущие настройки (раздел settings файла конфигурации).
 func (a *App) S() Settings {
-	s, _ := a.SettingsC.Get("main")
-	return s
+	a.setMu.RLock()
+	defer a.setMu.RUnlock()
+	return a.Cfg.Settings
+}
+
+// SetSettings применяет настройки и сохраняет их в файл конфигурации.
+// Если файл недоступен для записи, настройки действуют до перезапуска, а ошибка возвращается.
+func (a *App) SetSettings(s Settings) error {
+	a.setMu.Lock()
+	defer a.setMu.Unlock()
+	a.Cfg.Settings = s
+	if a.Cfg.path == "" {
+		return nil
+	}
+	return a.Cfg.Save(a.Cfg.path)
 }
 
 // ---------- шаблоны ----------
@@ -333,6 +329,7 @@ func (c *Ctx) Render(name string, data map[string]any) {
 		data = map[string]any{}
 	}
 	data["Cfg"] = c.Cfg
+	data["Product"], data["Vendor"] = ProductName, Vendor
 	data["Version"] = c.Version
 	data["Path"] = c.R.URL.Path
 	data["Year"] = time.Now().Year()
@@ -542,6 +539,7 @@ func (a *App) Handler() http.Handler {
 		fsrv.ServeHTTP(w, r)
 	})
 
+	g("/branding/logo", anyone, (*Ctx).logo)
 	g("/login", anyone, (*Ctx).loginPage)
 	po("/login", anyone, (*Ctx).loginPost)
 	po("/logout", authed, (*Ctx).logout)
@@ -679,11 +677,11 @@ func (a *App) Janitor(stop <-chan struct{}) {
 			}) {
 				a.finishAttempt(at.ID)
 			}
-			if n++; n%1440 == 0 {
+			if n++; n%60 == 0 { // раз в час журнал операций сворачивается в читаемый snapshot.json
 				a.DB.Compact()
 			}
 			if lt := now.In(a.Loc); a.Cfg.BackupHour >= 0 && lt.Hour() == a.Cfg.BackupHour {
-				name := filepath.Join(a.Cfg.DataDir, "backup", "kafedra-"+lt.Format("20060102")+".zip")
+				name := filepath.Join(a.Cfg.DataPath(), "backup", "kafedra-"+lt.Format("20060102")+".zip")
 				if _, err := os.Stat(name); os.IsNotExist(err) {
 					a.BackupToFile(name)
 				}
@@ -723,11 +721,31 @@ func (a *App) BackupToFile(name string) error {
 		rec.Detail = err.Error()
 	}
 	a.Audit.Log(rec)
-	if old, _ := filepath.Glob(filepath.Join(a.Cfg.DataDir, "backup", "kafedra-*.zip")); a.Cfg.BackupKeep > 0 && len(old) > a.Cfg.BackupKeep {
+	if old, _ := filepath.Glob(filepath.Join(a.Cfg.DataPath(), "backup", "kafedra-*.zip")); a.Cfg.BackupKeep > 0 && len(old) > a.Cfg.BackupKeep {
 		sort.Strings(old)
 		for _, o := range old[:len(old)-a.Cfg.BackupKeep] {
 			os.Remove(o)
 		}
 	}
 	return err
+}
+
+// logo отдаёт логотип: файл из конфигурации (logo_file) либо встроенный.
+func (c *Ctx) logo() {
+	h := c.W.Header()
+	h.Set("Cache-Control", "public, max-age=600")
+	h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox")
+	types := map[string]string{".png": "image/png", ".svg": "image/svg+xml", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
+	if p := c.Cfg.abs(c.Cfg.LogoFile); p != "" {
+		if ct := types[strings.ToLower(filepath.Ext(p))]; ct != "" {
+			if b, err := os.ReadFile(p); err == nil && len(b) <= 2<<20 {
+				h.Set("Content-Type", ct)
+				c.W.Write(b)
+				return
+			}
+		}
+	}
+	b, _ := assets.ReadFile("static/logo.svg")
+	h.Set("Content-Type", "image/svg+xml")
+	c.W.Write(b)
 }

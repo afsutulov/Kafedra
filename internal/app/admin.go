@@ -375,17 +375,22 @@ func (c *Ctx) adminSettingsSave() {
 	}
 	s.AllowedExt = strings.Join(exts, " ")
 	s.Banner = c.F("banner")
-	c.SettingsC.Put("main", s)
+	s.TOTPSkew = atoi(c.F("totp_skew"), 1, 0, 10)
+	saveErr := c.SetSettings(s)
 	ob, _ := json.Marshal(old)
 	nb, _ := json.Marshal(s)
 	c.Log("изменение настроек системы", "", true, fmt.Sprintf("было: %s; стало: %s", ob, nb))
-	c.Redirect("/admin/settings", "Настройки сохранены.")
+	if saveErr != nil {
+		c.Redirect("/admin/settings", "!Настройки применены, но не записаны в файл конфигурации ("+saveErr.Error()+"). После перезапуска вернутся значения из файла — внесите их в config.json вручную.")
+		return
+	}
+	c.Redirect("/admin/settings", "Настройки сохранены в файле конфигурации.")
 }
 
 // ---------- журнал событий ----------
 
 func (c *Ctx) adminAudit() {
-	dir := filepath.Join(c.Cfg.DataDir, "audit")
+	dir := c.Cfg.AuditPath()
 	files := secure.AuditFiles(dir)
 	var months []string
 	for _, f := range files {
@@ -419,7 +424,7 @@ func (c *Ctx) adminAudit() {
 }
 
 func (c *Ctx) adminAuditVerify() {
-	n, err := secure.VerifyAudit(filepath.Join(c.Cfg.DataDir, "audit"))
+	n, err := secure.VerifyAudit(c.Cfg.AuditPath())
 	if err != nil {
 		c.Log("проверка целостности журнала событий", "", false, err.Error())
 		c.Redirect("/admin/audit", "!"+err.Error())
@@ -491,15 +496,14 @@ func (a *App) Backup(w io.Writer, withKey bool) error {
 	if err := put("db/snapshot.json", snap); err != nil {
 		return err
 	}
-	dirs := []string{"files", "audit"}
-	for _, d := range dirs {
-		root := filepath.Join(a.Cfg.DataDir, d)
+	roots := map[string]string{"files": filepath.Join(a.Cfg.DataPath(), "files"), "audit": a.Cfg.AuditPath()}
+	for top, root := range roots {
 		err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
 			if err != nil || info.IsDir() {
 				return nil
 			}
-			rel, _ := filepath.Rel(a.Cfg.DataDir, p)
-			f, err := zw.Create(filepath.ToSlash(rel))
+			rel, _ := filepath.Rel(root, p)
+			f, err := zw.Create(top + "/" + filepath.ToSlash(rel))
 			if err != nil {
 				return err
 			}
@@ -516,7 +520,7 @@ func (a *App) Backup(w io.Writer, withKey bool) error {
 		}
 	}
 	if withKey {
-		if b, err := os.ReadFile(filepath.Join(a.Cfg.DataDir, "master.key")); err == nil {
+		if b, err := os.ReadFile(filepath.Join(a.Cfg.DataPath(), "master.key")); err == nil {
 			if err := put("master.key", b); err != nil {
 				return err
 			}
@@ -526,7 +530,7 @@ func (a *App) Backup(w io.Writer, withKey bool) error {
 }
 
 // Restore разворачивает резервную копию в каталог данных (сервис должен быть остановлен).
-func Restore(zipPath, dataDir string) error {
+func Restore(zipPath, dataDir, auditDir string) error {
 	zr, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return err
@@ -550,6 +554,9 @@ func Restore(zipPath, dataDir string) error {
 			continue
 		}
 		dst := filepath.Join(dataDir, name)
+		if top == "audit" && auditDir != "" {
+			dst = filepath.Join(auditDir, strings.TrimPrefix(filepath.ToSlash(name), "audit/"))
+		}
 		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 			return err
 		}

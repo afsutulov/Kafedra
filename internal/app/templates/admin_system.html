@@ -2,11 +2,13 @@
 {{define "content"}}
 <h2>Система</h2>
 <div class="glass-subcard"><dl class="kv">
-  <dt>Версия</dt><dd>{{.Cfg.SystemName}} {{.Version}}</dd>
+  <dt>Программа</dt><dd>{{.Product}}, правообладатель {{.Vendor}}</dd>
   <dt>Платформа</dt><dd>{{.OS}}, {{.Go}}</dd>
   <dt>Время работы</dt><dd>{{.Uptime}}</dd>
   <dt>Память процесса</dt><dd>{{size .Mem}}</dd>
-  <dt>Каталог данных</dt><dd class="mono">{{.Cfg.DataDir}}</dd>
+  <dt>Каталог данных</dt><dd class="mono">{{.Cfg.DataPath}}</dd>
+  <dt>Журнал событий безопасности</dt><dd class="mono">{{.Cfg.AuditPath}}</dd>
+  <dt>Журнал работы службы</dt><dd class="mono">{{if .Cfg.LogPath}}{{.Cfg.LogPath}}{{else}}стандартный вывод (journald){{end}}</dd>
   <dt>Часовой пояс</dt><dd>{{.Cfg.Timezone}}</dd>
   <dt>Контрольная сумма исполняемого файла (SHA-256)</dt><dd class="mono">{{.BinSum}}</dd>
 </dl>

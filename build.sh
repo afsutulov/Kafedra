@@ -3,7 +3,7 @@
 # сторонних модулей у проекта нет.
 set -eu
 cd "$(dirname "$0")"
-VERSION="${VERSION:-1.0.0}"
+VERSION="${VERSION:-1.2.0}"
 export CGO_ENABLED=0 GOFLAGS=-mod=mod GOPROXY=off
 go vet ./...
 go test ./...

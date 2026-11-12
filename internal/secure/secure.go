@@ -186,20 +186,23 @@ func TOTPCode(secret string, t time.Time) string {
 	return c
 }
 
-// VerifyTOTP проверяет код с допуском ±1 шаг. lastStep — последний использованный шаг
-// (защита от повторного использования кода); возвращается новый шаг.
-func VerifyTOTP(secret, code string, t time.Time, lastStep int64) (int64, bool) {
+// VerifyTOTP проверяет код с допуском ±skew шагов (по 30 с) на расхождение часов сервера и
+// устройства. lastStep — последний использованный шаг (защита от повторного использования кода);
+// возвращается новый шаг. Проверка выполняется локально, обращений в сеть не требуется.
+func VerifyTOTP(secret, code string, t time.Time, lastStep int64, skew int) (int64, bool) {
 	code = strings.TrimSpace(code)
 	if len(code) != 6 {
 		return 0, false
 	}
 	cur := t.Unix() / 30
-	for _, s := range []int64{cur, cur - 1, cur + 1} {
-		if s <= lastStep {
-			continue
-		}
-		if c, err := totpAt(secret, s); err == nil && Equal(c, code) {
-			return s, true
+	for d := 0; d <= skew && d <= 10; d++ {
+		for _, s := range []int64{cur - int64(d), cur + int64(d)} {
+			if s <= lastStep {
+				continue
+			}
+			if c, err := totpAt(secret, s); err == nil && Equal(c, code) {
+				return s, true
+			}
 		}
 	}
 	return 0, false

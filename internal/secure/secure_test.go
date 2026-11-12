@@ -35,11 +35,11 @@ func TestTOTP(t *testing.T) {
 		t.Fatalf("код %s, ожидался 287082", c)
 	}
 	now := time.Now()
-	step, ok := VerifyTOTP(secret, TOTPCode(secret, now), now, 0)
+	step, ok := VerifyTOTP(secret, TOTPCode(secret, now), now, 0, 1)
 	if !ok {
 		t.Fatal("код не принят")
 	}
-	if _, ok := VerifyTOTP(secret, TOTPCode(secret, now), now, step); ok {
+	if _, ok := VerifyTOTP(secret, TOTPCode(secret, now), now, step, 1); ok {
 		t.Fatal("код принят повторно")
 	}
 }

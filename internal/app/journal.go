@@ -726,7 +726,7 @@ func (c *Ctx) dashboard() {
 			size += f.Size
 		}
 		failed := 0
-		if files := secure.AuditFiles(c.Cfg.DataDir + "/audit"); len(files) > 0 {
+		if files := secure.AuditFiles(c.Cfg.AuditPath()); len(files) > 0 {
 			recs, _ := secure.ReadAuditFile(files[len(files)-1])
 			for _, r := range recs {
 				if !r.OK && now.Sub(r.Time) < 24*time.Hour {

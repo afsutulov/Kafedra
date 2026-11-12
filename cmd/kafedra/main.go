@@ -2,7 +2,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -10,11 +9,11 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math/big"
 	"net"
@@ -30,9 +29,10 @@ import (
 	"kafedra/internal/secure"
 )
 
-var version = "1.0.0"
+var version = "1.2.0"
 
-const usage = `ПК «Кафедра» — система управления обучением, версия %s
+const usage = `ПК «Кафедра» — система управления обучением
+© ООО «Рога и копыта»%.0s
 
 Использование: kafedra <команда> [параметры]
 
@@ -47,7 +47,7 @@ const usage = `ПК «Кафедра» — система управления �
   gencert       создать самоподписанный сертификат TLS (для пробной эксплуатации)
   version       показать версию
 
-Общий параметр: -config путь к файлу конфигурации (по умолчанию ./config.json)
+Общий параметр: -config путь к файлу конфигурации (по умолчанию /opt/kafedra/config.json)
 `
 
 func main() {
@@ -85,33 +85,28 @@ func main() {
 	}
 }
 
-func defaultConfig() app.Config {
-	return app.Config{Listen: ":8443", DataDir: "./data", Timezone: "Europe/Moscow", SystemName: "Кафедра", BackupHour: 3, BackupKeep: 7}
-}
-
-func loadConfig(path string) (app.Config, error) {
-	cfg := defaultConfig()
-	b, err := os.ReadFile(path)
+// setupLog направляет журнал работы службы в файл из конфигурации (log_file), сохраняя вывод в консоль.
+func setupLog(cfg app.Config) (io.Writer, error) {
+	p := cfg.LogPath()
+	if p == "" {
+		return os.Stdout, nil
+	}
+	os.MkdirAll(filepath.Dir(p), 0o750)
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
 	if err != nil {
-		return cfg, fmt.Errorf("не удалось прочитать конфигурацию %s: %w (создайте её командой init)", path, err)
+		return nil, fmt.Errorf("файл журнала недоступен: %w (создайте каталог и дайте службе права на запись либо укажите в config.json другой log_file; \"-\" — только стандартный вывод)", err)
 	}
-	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&cfg); err != nil {
-		return cfg, fmt.Errorf("ошибка в файле конфигурации %s: %w", path, err)
-	}
-	if !filepath.IsAbs(cfg.DataDir) { // относительные пути отсчитываются от каталога конфигурации
-		cfg.DataDir = filepath.Join(filepath.Dir(path), cfg.DataDir)
-	}
-	return cfg, nil
+	w := io.MultiWriter(os.Stdout, f)
+	log.SetOutput(w)
+	return w, nil
 }
 
 func open(args []string, fs *flag.FlagSet) (*app.App, error) {
-	cfgPath := fs.String("config", "config.json", "файл конфигурации")
+	cfgPath := fs.String("config", app.DefaultConfigPath, "файл конфигурации")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
-	cfg, err := loadConfig(*cfgPath)
+	cfg, err := app.LoadConfig(*cfgPath)
 	if err != nil {
 		return nil, err
 	}
@@ -120,16 +115,23 @@ func open(args []string, fs *flag.FlagSet) (*app.App, error) {
 
 func cmdInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
-	cfgPath := fs.String("config", "config.json", "файл конфигурации")
+	cfgPath := fs.String("config", app.DefaultConfigPath, "файл конфигурации")
 	login := fs.String("admin", "admin", "логин администратора")
 	name := fs.String("name", "Администратор системы", "ФИО администратора")
-	dataDir := fs.String("data", "", "каталог данных (по умолчанию ./data рядом с конфигурацией)")
+	dataDir := fs.String("data", "", "каталог данных (по умолчанию /opt/kafedra/data)")
 	listen := fs.String("listen", "", "адрес и порт (по умолчанию :8443)")
-	org := fs.String("org", "", "название организации")
+	org := fs.String("org", "", "название организации (вторая строка заголовка)")
+	portal := fs.String("portal", "Учебный портал", "название портала (первая строка заголовка)")
+	logFile := fs.String("log", app.DefaultLogFile, "файл журнала работы службы (\"-\" — только стандартный вывод)")
 	demo := fs.Bool("demo", false, "добавить демонстрационные данные")
+	cfgOnly := fs.Bool("config-only", false, "только создать файл конфигурации")
+	tlsCert := fs.String("tls-cert", "", "файл сертификата TLS")
+	tlsKey := fs.String("tls-key", "", "файл ключа TLS")
 	fs.Parse(args)
 	if _, err := os.Stat(*cfgPath); os.IsNotExist(err) {
-		cfg := defaultConfig()
+		cfg := app.DefaultConfig()
+		cfg.PortalName = *portal
+		cfg.LogFile = *logFile
 		if *dataDir != "" {
 			cfg.DataDir = *dataDir
 		}
@@ -137,13 +139,19 @@ func cmdInit(args []string) error {
 			cfg.Listen = *listen
 		}
 		cfg.OrgName = *org
-		b, _ := json.MarshalIndent(cfg, "", "  ")
-		if err := os.WriteFile(*cfgPath, append(b, '\n'), 0o640); err != nil {
+		cfg.TLSCert, cfg.TLSKey = *tlsCert, *tlsKey
+		if err := os.MkdirAll(filepath.Dir(*cfgPath), 0o750); err != nil {
+			return err
+		}
+		if err := cfg.Save(*cfgPath); err != nil {
 			return err
 		}
 		fmt.Println("Создан файл конфигурации:", *cfgPath)
 	}
-	cfg, err := loadConfig(*cfgPath)
+	if *cfgOnly {
+		return nil
+	}
+	cfg, err := app.LoadConfig(*cfgPath)
 	if err != nil {
 		return err
 	}
@@ -160,8 +168,8 @@ func cmdInit(args []string) error {
 		return err
 	}
 	a.Audit.Log(secure.AuditRecord{Event: "инициализация системы", Login: *login, OK: true, Detail: "версия " + version})
-	fmt.Printf("\nСистема инициализирована. Каталог данных: %s\n\n  Администратор: %s\n  Временный пароль: %s\n\n", cfg.DataDir, *login, pw)
-	fmt.Println("Пароль показан один раз. При первом входе система потребует сменить его и подключить второй фактор.")
+	fmt.Printf("\nСистема инициализирована. Каталог данных: %s\n\n  Администратор: %s\n  Временный пароль: %s\n\n", cfg.DataPath(), *login, pw)
+	fmt.Println("Пароль показан один раз. При первом входе система потребует сменить его.")
 	if *demo {
 		creds, err := a.SeedDemo()
 		if err != nil {
@@ -172,7 +180,7 @@ func cmdInit(args []string) error {
 			fmt.Printf("  %-10s %s\n", c[0], c[1])
 		}
 	}
-	fmt.Println("\nВАЖНО: сохраните копию файла", filepath.Join(cfg.DataDir, "master.key"), "в защищённом месте — без него невозможно проверить пароли из резервной копии.")
+	fmt.Println("\nВАЖНО: сохраните копию файла", filepath.Join(cfg.DataPath(), "master.key"), "в защищённом месте — без него невозможно проверить пароли из резервной копии.")
 	return nil
 }
 
@@ -193,8 +201,12 @@ func cmdServe(args []string) error {
 		MaxHeaderBytes:    64 << 10,
 		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12},
 	}
-	// события безопасности дублируются в стандартный вывод (journald → SIEM)
-	a.Audit.Echo = func(line []byte) { os.Stdout.Write(append([]byte("AUDIT "), line...)) }
+	logw, err := setupLog(a.Cfg)
+	if err != nil {
+		return err
+	}
+	// события безопасности дублируются в журнал работы службы (файл log_file и стандартный вывод)
+	a.Audit.Echo = func(line []byte) { logw.Write(append([]byte("AUDIT "), line...)) }
 	stop := make(chan struct{})
 	go a.Janitor(stop)
 	useTLS := a.Cfg.TLSCert != "" && a.Cfg.TLSKey != ""
@@ -202,13 +214,13 @@ func cmdServe(args []string) error {
 	errc := make(chan error, 1)
 	go func() {
 		if useTLS {
-			log.Printf("ПК «Кафедра» %s: приём соединений HTTPS на %s", version, a.Cfg.Listen)
+			log.Printf("ПК «Кафедра»: приём соединений HTTPS на %s", a.Cfg.Listen)
 			errc <- srv.ListenAndServeTLS(a.Cfg.TLSCert, a.Cfg.TLSKey)
 		} else {
 			if host, _, _ := net.SplitHostPort(a.Cfg.Listen); host != "127.0.0.1" && host != "localhost" && host != "::1" {
 				log.Printf("ПРЕДУПРЕЖДЕНИЕ: TLS не настроен, а сервер доступен по сети. Укажите tls_cert и tls_key либо разместите сервер за обратным прокси с TLS и слушайте 127.0.0.1.")
 			}
-			log.Printf("ПК «Кафедра» %s: приём соединений HTTP на %s", version, a.Cfg.Listen)
+			log.Printf("ПК «Кафедра»: приём соединений HTTP на %s", a.Cfg.Listen)
 			errc <- srv.ListenAndServe()
 		}
 	}()
@@ -221,7 +233,7 @@ func cmdServe(args []string) error {
 			return err
 		case s := <-sig:
 			if s == syscall.SIGUSR1 {
-				name := filepath.Join(a.Cfg.DataDir, "backup", "kafedra-"+time.Now().In(a.Loc).Format("20060102-150405")+".zip")
+				name := filepath.Join(a.Cfg.DataPath(), "backup", "kafedra-"+time.Now().In(a.Loc).Format("20060102-150405")+".zip")
 				if err := a.BackupToFile(name); err != nil {
 					log.Printf("резервное копирование: %v", err)
 				} else {
@@ -264,13 +276,13 @@ func cmdBackup(args []string) error {
 
 func cmdRestore(args []string) error {
 	fs := flag.NewFlagSet("restore", flag.ExitOnError)
-	cfgPath := fs.String("config", "config.json", "файл конфигурации")
+	cfgPath := fs.String("config", app.DefaultConfigPath, "файл конфигурации")
 	in := fs.String("in", "", "файл резервной копии")
 	fs.Parse(args)
 	if *in == "" {
 		return errors.New("укажите файл: -in копия.zip")
 	}
-	cfg, err := loadConfig(*cfgPath)
+	cfg, err := app.LoadConfig(*cfgPath)
 	if err != nil {
 		return err
 	}
@@ -281,11 +293,11 @@ func cmdRestore(args []string) error {
 	}
 	a.Audit.Close()
 	a.DB.Close()
-	if err := app.Restore(*in, cfg.DataDir); err != nil {
+	if err := app.Restore(*in, cfg.DataPath(), cfg.AuditPath()); err != nil {
 		return err
 	}
-	fmt.Println("Данные восстановлены в", cfg.DataDir)
-	if n, err := secure.VerifyAudit(filepath.Join(cfg.DataDir, "audit")); err != nil {
+	fmt.Println("Данные восстановлены в", cfg.DataPath())
+	if n, err := secure.VerifyAudit(cfg.AuditPath()); err != nil {
 		fmt.Println("ВНИМАНИЕ:", err)
 	} else {
 		fmt.Println("Целостность журнала событий подтверждена, записей:", n)
@@ -322,13 +334,13 @@ func cmdPasswd(args []string) error {
 
 func cmdAuditVerify(args []string) error {
 	fs := flag.NewFlagSet("audit-verify", flag.ExitOnError)
-	cfgPath := fs.String("config", "config.json", "файл конфигурации")
+	cfgPath := fs.String("config", app.DefaultConfigPath, "файл конфигурации")
 	fs.Parse(args)
-	cfg, err := loadConfig(*cfgPath)
+	cfg, err := app.LoadConfig(*cfgPath)
 	if err != nil {
 		return err
 	}
-	n, err := secure.VerifyAudit(filepath.Join(cfg.DataDir, "audit"))
+	n, err := secure.VerifyAudit(cfg.AuditPath())
 	if err != nil {
 		return err
 	}

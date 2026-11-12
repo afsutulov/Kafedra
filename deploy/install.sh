@@ -1,9 +1,12 @@
 #!/bin/sh
 # Установка ПК «Кафедра» на сервер Linux (Astra Linux, РЕД ОС, Альт и др.). Запускать от root:
-#   sh install.sh [имя-узла-или-IP] ["Название организации"]
+#   sh install.sh [имя-узла-или-IP] ["Название организации"] ["Название портала"]
+# Всё размещается в /opt/kafedra (программа, config.json, сертификат, данные); журнал — в /var/log/kafedra.
 set -eu
 HOST="${1:-$(hostname -f 2>/dev/null || hostname)}"
 ORG="${2:-}"
+PORTAL="${3:-Учебный портал}"
+HOME_DIR=/opt/kafedra
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 case "$(uname -m)" in
   x86_64) ARCH=amd64 ;;
@@ -17,37 +20,28 @@ if [ -f "$HERE/dist/SHA256SUMS" ]; then
   (cd "$HERE/dist" && grep "kafedra-linux-$ARCH" SHA256SUMS | sha256sum -c -) || { echo "Контрольная сумма не совпала"; exit 1; }
 fi
 
-id kafedra >/dev/null 2>&1 || useradd --system --home-dir /var/lib/kafedra --shell /usr/sbin/nologin kafedra
-install -d -m 0755 /opt/kafedra
-install -d -m 0750 -o root -g kafedra /etc/kafedra
-install -d -m 0700 -o kafedra -g kafedra /var/lib/kafedra
-install -m 0755 "$BIN" /opt/kafedra/kafedra
+id kafedra >/dev/null 2>&1 || useradd --system --home-dir "$HOME_DIR" --shell /usr/sbin/nologin kafedra
+# каталог и программа принадлежат root (служба не может подменить исполняемый файл);
+# службе принадлежат только данные, файл конфигурации, ключ TLS и журнал
+install -d -m 0755 -o root -g root "$HOME_DIR"
+install -d -m 0700 -o kafedra -g kafedra "$HOME_DIR/data"
+install -d -m 0750 -o kafedra -g kafedra /var/log/kafedra
+install -m 0755 -o root -g root "$BIN" "$HOME_DIR/kafedra"
 
-if [ ! -f /etc/kafedra/cert.pem ]; then
-  /opt/kafedra/kafedra gencert -host "$HOST" -out /etc/kafedra
-  chown root:kafedra /etc/kafedra/cert.pem /etc/kafedra/key.pem
-  chmod 0640 /etc/kafedra/key.pem
+if [ ! -f "$HOME_DIR/cert.pem" ]; then
+  "$HOME_DIR/kafedra" gencert -host "$HOST" -out "$HOME_DIR"
+  chown root:kafedra "$HOME_DIR/cert.pem" "$HOME_DIR/key.pem"
+  chmod 0644 "$HOME_DIR/cert.pem"
+  chmod 0640 "$HOME_DIR/key.pem"
 fi
-if [ ! -f /etc/kafedra/config.json ]; then
-  cat > /etc/kafedra/config.json <<CFG
-{
-  "listen": ":443",
-  "data_dir": "/var/lib/kafedra",
-  "tls_cert": "/etc/kafedra/cert.pem",
-  "tls_key": "/etc/kafedra/key.pem",
-  "timezone": "Europe/Moscow",
-  "org_name": "$ORG",
-  "system_name": "Кафедра",
-  "trusted_proxy": "",
-  "backup_hour": 3,
-  "backup_keep": 7
-}
-CFG
-  chown root:kafedra /etc/kafedra/config.json
-  chmod 0640 /etc/kafedra/config.json
+if [ ! -f "$HOME_DIR/config.json" ]; then
+  "$HOME_DIR/kafedra" init -config-only -listen ":443" \
+    -tls-cert "$HOME_DIR/cert.pem" -tls-key "$HOME_DIR/key.pem" -portal "$PORTAL" -org "$ORG"
+  chown kafedra:kafedra "$HOME_DIR/config.json"   # служба записывает сюда настройки, изменённые в веб-интерфейсе
+  chmod 0600 "$HOME_DIR/config.json"
 fi
-if [ ! -d /var/lib/kafedra/db ]; then
-  runuser -u kafedra -- /opt/kafedra/kafedra init -config /etc/kafedra/config.json
+if [ ! -d "$HOME_DIR/data/db" ]; then
+  runuser -u kafedra -- "$HOME_DIR/kafedra" init
 fi
 install -m 0644 "$HERE/deploy/kafedra.service" /etc/systemd/system/kafedra.service
 systemctl daemon-reload
@@ -56,4 +50,4 @@ sleep 1
 systemctl --no-pager --lines=5 status kafedra || true
 echo
 echo "Готово. Откройте https://$HOST/ и войдите под учётной записью администратора (пароль показан выше)."
-echo "Проверьте часовой пояс в /etc/kafedra/config.json и замените самоподписанный сертификат на выданный УЦ."
+echo "Настройки: $HOME_DIR/config.json. Проверьте часовой пояс и замените самоподписанный сертификат на выданный УЦ."

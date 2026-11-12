@@ -34,7 +34,7 @@
     <button class="primary-btn" type="submit">Подтвердить и включить</button>
   </form>
 {{else}}
-  <p>{{if .MFARequired}}<span class="tag warn">обязательна для вашей роли</span>{{else}}<span class="tag">не подключена</span>{{end}} Второй фактор защищает учётную запись, даже если пароль стал известен посторонним.</p>
+  <p>{{if .MFARequired}}<span class="tag warn">обязательна для вашей роли</span>{{else}}<span class="tag">не подключена</span>{{end}} Второй фактор защищает учётную запись, даже если пароль стал известен посторонним. Подключение добровольное; интернет не требуется ни серверу, ни телефону.</p>
   <form method="post" action="/profile/mfa/start">{{template "csrf" .}}<button class="primary-btn" type="submit">Подключить</button></form>
 {{end}}
 </div>

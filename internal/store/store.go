@@ -177,7 +177,7 @@ func (db *DB) buildSnapshot() ([]byte, error) {
 		}
 		s.Colls[name] = m
 	}
-	return json.Marshal(s)
+	return json.MarshalIndent(s, "", "  ") // с отступами: файл читается человеком
 }
 
 // Snapshot возвращает согласованный снимок всех данных (для резервного копирования).

@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{block "title" .}}{{.Cfg.SystemName}}{{end}}</title>
-  <link rel="icon" type="image/svg+xml" href="/static/logo.svg">
+  <title>{{block "title" .}}{{.Cfg.PortalName}}{{end}}</title>
+  <link rel="icon" href="/branding/logo">
   <link rel="stylesheet" href="/static/styles.css">
   <script src="/static/app.js" defer></script>
 </head>
@@ -13,8 +13,8 @@
 <div class="shell">
   <header class="topbar">
     <div class="topbar-left">
-      <img src="/static/logo.svg" alt="" class="header-logo">
-      <span class="header-title">{{.Cfg.SystemName}} — система управления обучением{{if .Cfg.OrgName}}<br>{{.Cfg.OrgName}}{{end}}</span>
+      <img src="/branding/logo" alt="" class="header-logo">
+      <span class="header-title"><span class="portal-name">{{.Cfg.PortalName}}</span>{{if .Cfg.OrgName}}<span class="org-name">{{.Cfg.OrgName}}</span>{{end}}</span>
     </div>
     <div class="topbar-right">
       <button type="button" class="ghost-btn small" id="a11y-toggle" title="Версия для слабовидящих">Аа</button>
@@ -32,7 +32,7 @@
       {{template "content" .}}
     </section>
   </main>
-  <footer class="footer">{{.Cfg.SystemName}}, версия {{.Version}} · {{if .Cfg.OrgName}}{{.Cfg.OrgName}} · {{end}}{{.Year}}</footer>
+  <footer class="footer"><span>{{.Product}}</span><span>© {{.Vendor}}</span></footer>
 </div>
 {{else}}
 {{template "content" .}}

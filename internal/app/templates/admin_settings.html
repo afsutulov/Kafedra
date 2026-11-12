@@ -1,6 +1,7 @@
 {{define "title"}}Настройки{{end}}
 {{define "content"}}
 <h2>Настройки системы</h2>
+<p class="note">Настройки хранятся в разделе <span class="mono">settings</span> файла конфигурации <span class="mono">config.json</span>; их можно менять здесь или в самом файле (после правки файла перезапустите службу). Названия портала и организации, логотип, пути к журналам и каталогу данных задаются только в файле.</p>
 <form method="post" action="/admin/settings" class="stack-form">{{template "csrf" .}}
   <h3>Парольная политика</h3>
   <div class="form-grid three">
@@ -27,6 +28,7 @@
       <option value="staff" {{if eq .S.MFARoles "staff"}}selected{{end}}>для администраторов и преподавателей</option>
       <option value="all" {{if eq .S.MFARoles "all"}}selected{{end}}>для всех</option></select></label>
   </div>
+  <label>Допуск расхождения часов для одноразовых кодов, шагов по 30 с<input type="number" name="totp_skew" value="{{.S.TOTPSkew}}" min="0" max="10"></label>
   <label>Предупреждение на странице входа<input type="text" name="banner" value="{{.S.Banner}}" maxlength="500"></label>
   <h3>Учебный процесс</h3>
   <div class="form-grid three">

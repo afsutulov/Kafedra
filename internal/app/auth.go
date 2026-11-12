@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -181,7 +182,7 @@ func (c *Ctx) mfaPost() {
 	secret, err := c.Keys.Open(c.User.TOTPSecret)
 	step, ok := int64(0), false
 	if err == nil {
-		step, ok = secure.VerifyTOTP(string(secret), c.F("code"), time.Now(), c.User.TOTPStep)
+		step, ok = secure.VerifyTOTP(string(secret), c.F("code"), time.Now(), c.User.TOTPStep, c.S().TOTPSkew)
 	}
 	if !ok {
 		c.Log("второй фактор", "", false, "неверный код")
@@ -277,7 +278,7 @@ func (c *Ctx) profile() {
 	if c.Sess.PendingTOTP != "" {
 		if sec, err := c.Keys.Open(c.Sess.PendingTOTP); err == nil {
 			data["Secret"] = string(sec)
-			data["OTPAuth"] = "otpauth://totp/" + c.Cfg.SystemName + ":" + c.User.Login + "?secret=" + string(sec) + "&issuer=" + c.Cfg.SystemName
+			data["OTPAuth"] = "otpauth://totp/" + url.PathEscape(c.Cfg.PortalName+":"+c.User.Login) + "?secret=" + string(sec) + "&issuer=" + url.QueryEscape(c.Cfg.PortalName)
 		}
 	}
 	data["Sessions"] = sortBy(c.Sessions.Find(func(s *Session) bool { return s.UserID == c.User.ID }), func(a, b *Session) bool { return a.Seen.After(b.Seen) })
@@ -301,7 +302,7 @@ func (c *Ctx) mfaConfirm() {
 		c.Redirect("/profile", "!Сначала начните подключение.")
 		return
 	}
-	step, ok := secure.VerifyTOTP(string(sec), c.F("code"), time.Now(), 0)
+	step, ok := secure.VerifyTOTP(string(sec), c.F("code"), time.Now(), 0, c.S().TOTPSkew)
 	if !ok {
 		c.Redirect("/profile", "!Код не подошёл. Проверьте время на устройстве и введите новый код.")
 		return

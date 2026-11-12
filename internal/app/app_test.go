@@ -123,6 +123,9 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Close()
+	set := a.S()
+	set.MFARoles = "admin" // по умолчанию второй фактор необязателен; здесь проверяется обязательный режим
+	a.SetSettings(set)
 	const adminTemp = "Temp-Admin-Pass-1!"
 	if _, err := a.CreateUser("admin", "Админ", "", RoleAdmin, "", adminTemp); err != nil {
 		t.Fatal(err)
@@ -304,7 +307,7 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	// --- журнал событий и резервная копия
-	if n, err := secure.VerifyAudit(filepath.Join(dir, "audit")); err != nil || n < 20 {
+	if n, err := secure.VerifyAudit(a.Cfg.AuditPath()); err != nil || n < 20 {
 		t.Fatalf("журнал событий: n=%d err=%v", n, err)
 	}
 	_, body = adm.get("/admin/audit?fail=1")
@@ -317,7 +320,7 @@ func TestEndToEnd(t *testing.T) {
 	zipPath := filepath.Join(t.TempDir(), "b.zip")
 	os.WriteFile(zipPath, zb.Bytes(), 0o600)
 	restored := t.TempDir()
-	if err := Restore(zipPath, restored); err != nil {
+	if err := Restore(zipPath, restored, ""); err != nil {
 		t.Fatal(err)
 	}
 	b, err := New(Config{DataDir: restored, BackupHour: -1}, "test")
@@ -360,5 +363,66 @@ func TestParseQuestions(t *testing.T) {
 	}
 	if got := scoreQuestion(&q, Answer{Opts: []int{0, 2}}); got != 0 {
 		t.Fatalf("штраф за неверный вариант: %v", got)
+	}
+}
+
+// Второй фактор по умолчанию необязателен; настройки читаются из config.json и записываются в него
+// в удобочитаемом виде.
+func TestConfigAndOptionalMFA(t *testing.T) {
+	secure.Iterations = 1000
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	cfg := DefaultConfig()
+	cfg.PortalName, cfg.OrgName, cfg.LogFile, cfg.DataDir = "Корпоративный университет", "АО «Пример»", "logs/kafedra.log", "./data"
+	if err := cfg.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), "\n  \"portal_name\": \"Корпоративный университет\"") || !strings.Contains(string(raw), "\n    \"mfa_required_for\": \"none\"") {
+		t.Fatalf("конфигурация не в читаемом виде:\n%s", raw)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DataPath() != filepath.Join(dir, "data") || cfg.LogPath() != filepath.Join(dir, "logs", "kafedra.log") {
+		t.Fatalf("пути: %s %s", cfg.DataPath(), cfg.LogPath())
+	}
+	a, err := New(cfg, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	a.CreateUser("admin", "Админ", "", RoleAdmin, "", "Temp-Parol-12345!")
+	srv := httptest.NewServer(a.Handler())
+	defer srv.Close()
+	c := newClient(t, srv.URL)
+	c.login("admin", "Temp-Parol-12345!", "Glavnyi-Parol-2026!")
+	code, body := c.get("/admin/users") // без подключения второго фактора
+	if code != 200 || strings.Contains(body, "обязательна двухфакторная") {
+		t.Fatalf("администратор без 2ФА не допущен: %d", code)
+	}
+	mustContain(t, body, "Корпоративный университет")
+	mustContain(t, body, "АО «Пример»")
+	mustContain(t, body, "© ООО «Рога и копыта»")
+	if strings.Contains(body, "версия") {
+		t.Fatal("в интерфейсе выводится номер версии")
+	}
+	// изменение настроек из интерфейса попадает в config.json
+	c.get("/admin/settings")
+	c.post("/admin/settings", "pw_min_len", "14", "mfa_roles", "none", "lock_attempts", "7", "allowed_ext", "pdf docx", "totp_skew", "2")
+	saved, _ := LoadConfig(path)
+	if saved.Settings.PwMinLen != 14 || saved.Settings.LockAttempts != 7 || saved.Settings.TOTPSkew != 2 || saved.PortalName != "Корпоративный университет" {
+		t.Fatalf("настройки не сохранены в файл: %+v", saved.Settings)
+	}
+	// снимок базы данных — с отступами
+	a.DB.Compact()
+	snap, _ := os.ReadFile(filepath.Join(cfg.DataPath(), "db", "snapshot.json"))
+	if !strings.Contains(string(snap), "\n        \"Login\": \"admin\"") {
+		t.Fatalf("snapshot.json не отформатирован:\n%.400s", snap)
+	}
+	// логотип: встроенный и из файла
+	if _, body := c.get("/branding/logo"); !strings.Contains(body, "<svg") {
+		t.Fatal("встроенный логотип не отдаётся")
 	}
 }

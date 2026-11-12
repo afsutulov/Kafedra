@@ -2,12 +2,12 @@
   <defs>
     <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="1" stop-color="#dbe8f5"/>
+      <stop offset="1" stop-color="#e1ecf7"/>
     </linearGradient>
   </defs>
-  <path d="M48 4 86 16v30c0 22-15 37-38 46C25 83 10 68 10 46V16z" fill="url(#g)" stroke="#163e68" stroke-width="4" stroke-linejoin="round"/>
-  <path d="M48 28 24 39l24 11 24-11z" fill="#245b93"/>
-  <path d="M33 46v11c0 4 7 8 15 8s15-4 15-8V46l-15 7z" fill="#163e68"/>
-  <path d="M72 39v17" stroke="#d24a43" stroke-width="4" stroke-linecap="round"/>
-  <circle cx="72" cy="60" r="4" fill="#d24a43"/>
+  <path d="M48 4 86 16v30c0 22-15 37-38 46C25 83 10 68 10 46V16z" fill="url(#g)" stroke="#43546e" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M48 28 24 39l24 11 24-11z" fill="#566a88"/>
+  <path d="M33 46v11c0 4 7 8 15 8s15-4 15-8V46l-15 7z" fill="#43546e"/>
+  <path d="M72 39v17" stroke="#e96646" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="72" cy="60" r="4" fill="#e96646"/>
 </svg>
