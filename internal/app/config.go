@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 )
@@ -20,9 +21,10 @@ type Config struct {
 	DataDir      string `json:"data_dir"`      // каталог данных
 	LogFile      string `json:"log_file"`      // файл журнала работы службы ("-" — только стандартный вывод)
 	AuditDir     string `json:"audit_dir"`     // каталог журнала событий безопасности (пусто — <data_dir>/audit)
-	TLSCert      string `json:"tls_cert"`      // сертификат TLS
+	TLSCert      string `json:"tls_cert"`      // сертификат TLS (пусто — работа по HTTP за внешним веб-сервером)
 	TLSKey       string `json:"tls_key"`       // ключ TLS
-	TrustedProxy string `json:"trusted_proxy"` // IP обратного прокси
+	ExternalURL  string `json:"external_url"`  // адрес, по которому портал открывают пользователи, например https://lms.example.ru
+	TrustedProxy string `json:"trusted_proxy"` // IP внешнего веб-сервера (прокси); несколько — через запятую
 	Timezone     string `json:"timezone"`      // часовой пояс
 	PortalName   string `json:"portal_name"`   // первая строка заголовка: название портала
 	OrgName      string `json:"org_name"`      // вторая строка заголовка: название организации
@@ -31,6 +33,9 @@ type Config struct {
 	BackupKeep   int    `json:"backup_keep"`   // сколько последних копий хранить
 
 	Settings Settings `json:"settings"` // безопасность, учебный процесс, файлы (изменяются и из веб-интерфейса)
+
+	// LegacySystemName — параметр версии 1.0; принимается, чтобы старый файл конфигурации загружался, и не используется.
+	LegacySystemName string `json:"system_name,omitempty"`
 
 	path string // откуда загружен файл
 	base string // каталог файла конфигурации: от него отсчитываются относительные пути
@@ -62,8 +67,18 @@ func LoadConfig(path string) (Config, error) {
 	if err := dec.Decode(&cfg); err != nil {
 		return cfg, fmt.Errorf("ошибка в файле конфигурации %s: %w", path, err)
 	}
+	cfg.LegacySystemName = ""
 	cfg.path = path
 	cfg.base = filepath.Dir(path)
+	if (cfg.TLSCert == "") != (cfg.TLSKey == "") {
+		return cfg, fmt.Errorf("%s: tls_cert и tls_key задаются вместе; для работы без сертификатов оставьте оба пустыми", path)
+	}
+	if cfg.ExternalURL != "" {
+		u, err := url.Parse(cfg.ExternalURL)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			return cfg, fmt.Errorf("%s: external_url должен иметь вид https://имя-узла", path)
+		}
+	}
 	return cfg, nil
 }
 
@@ -89,6 +104,26 @@ func (c Config) abs(p string) string {
 		return p
 	}
 	return filepath.Join(c.base, p)
+}
+
+// UseTLS сообщает, принимает ли программа соединения HTTPS сама.
+func (c Config) UseTLS() bool { return c.TLSCert != "" && c.TLSKey != "" }
+
+// CertPath и KeyPath возвращают абсолютные пути сертификата и ключа.
+func (c Config) CertPath() string { return c.abs(c.TLSCert) }
+func (c Config) KeyPath() string  { return c.abs(c.TLSKey) }
+
+// externalHost возвращает узел и признак HTTPS из external_url.
+func (c Config) externalHost() (host string, https bool) {
+	if u, err := url.Parse(c.ExternalURL); err == nil && c.ExternalURL != "" {
+		return u.Host, u.Scheme == "https"
+	}
+	return "", false
+}
+
+// BehindProxy сообщает, что TLS завершается на внешнем веб-сервере.
+func (c Config) BehindProxy() bool {
+	return !c.UseTLS() && (c.ExternalURL != "" || c.TrustedProxy != "")
 }
 
 // DataPath возвращает абсолютный путь каталога данных.

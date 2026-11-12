@@ -29,7 +29,7 @@ import (
 	"kafedra/internal/secure"
 )
 
-var version = "1.2.0"
+var version = "1.2.1"
 
 const usage = `ПК «Кафедра» — система управления обучением
 © ООО «Рога и копыта»%.0s
@@ -127,6 +127,8 @@ func cmdInit(args []string) error {
 	cfgOnly := fs.Bool("config-only", false, "только создать файл конфигурации")
 	tlsCert := fs.String("tls-cert", "", "файл сертификата TLS")
 	tlsKey := fs.String("tls-key", "", "файл ключа TLS")
+	extURL := fs.String("external-url", "", "адрес портала для пользователей при работе за внешним веб-сервером (https://...)")
+	proxy := fs.String("trusted-proxy", "", "IP внешнего веб-сервера")
 	fs.Parse(args)
 	if _, err := os.Stat(*cfgPath); os.IsNotExist(err) {
 		cfg := app.DefaultConfig()
@@ -140,6 +142,7 @@ func cmdInit(args []string) error {
 		}
 		cfg.OrgName = *org
 		cfg.TLSCert, cfg.TLSKey = *tlsCert, *tlsKey
+		cfg.ExternalURL, cfg.TrustedProxy = *extURL, *proxy
 		if err := os.MkdirAll(filepath.Dir(*cfgPath), 0o750); err != nil {
 			return err
 		}
@@ -209,18 +212,24 @@ func cmdServe(args []string) error {
 	a.Audit.Echo = func(line []byte) { logw.Write(append([]byte("AUDIT "), line...)) }
 	stop := make(chan struct{})
 	go a.Janitor(stop)
-	useTLS := a.Cfg.TLSCert != "" && a.Cfg.TLSKey != ""
+	useTLS := a.Cfg.UseTLS()
+	if useTLS {
+		if _, err := tls.LoadX509KeyPair(a.Cfg.CertPath(), a.Cfg.KeyPath()); err != nil {
+			return fmt.Errorf("сертификат TLS не загружен: %w (для работы без сертификатов за внешним веб-сервером оставьте tls_cert и tls_key пустыми)", err)
+		}
+	}
 	a.Audit.Log(secure.AuditRecord{Event: "запуск системы", OK: true, Detail: fmt.Sprintf("версия %s, sha256 исполняемого файла %s, TLS: %v", version, a.BinSum, useTLS)})
 	errc := make(chan error, 1)
 	go func() {
-		if useTLS {
+		switch {
+		case useTLS:
 			log.Printf("ПК «Кафедра»: приём соединений HTTPS на %s", a.Cfg.Listen)
-			errc <- srv.ListenAndServeTLS(a.Cfg.TLSCert, a.Cfg.TLSKey)
-		} else {
-			if host, _, _ := net.SplitHostPort(a.Cfg.Listen); host != "127.0.0.1" && host != "localhost" && host != "::1" {
-				log.Printf("ПРЕДУПРЕЖДЕНИЕ: TLS не настроен, а сервер доступен по сети. Укажите tls_cert и tls_key либо разместите сервер за обратным прокси с TLS и слушайте 127.0.0.1.")
-			}
-			log.Printf("ПК «Кафедра»: приём соединений HTTP на %s", a.Cfg.Listen)
+			errc <- srv.ListenAndServeTLS(a.Cfg.CertPath(), a.Cfg.KeyPath())
+		case a.Cfg.BehindProxy():
+			log.Printf("ПК «Кафедра»: приём соединений HTTP на %s; шифрование выполняет внешний веб-сервер (external_url: %q, trusted_proxy: %q)", a.Cfg.Listen, a.Cfg.ExternalURL, a.Cfg.TrustedProxy)
+			errc <- srv.ListenAndServe()
+		default:
+			log.Printf("ПК «Кафедра»: приём соединений HTTP на %s без шифрования. Если перед программой стоит веб-сервер с HTTPS, укажите в config.json external_url и trusted_proxy.", a.Cfg.Listen)
 			errc <- srv.ListenAndServe()
 		}
 	}()

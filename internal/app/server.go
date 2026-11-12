@@ -393,10 +393,24 @@ func (c *Ctx) F(name string) string { return strings.TrimSpace(c.R.FormValue(nam
 
 // Back возвращает адрес страницы, с которой пришёл запрос (только локальный).
 func (c *Ctx) Back(def string) string {
-	if u, err := url.Parse(c.R.Referer()); err == nil && u.Host == c.R.Host && strings.HasPrefix(u.Path, "/") {
+	if u, err := url.Parse(c.R.Referer()); err == nil && c.R.Referer() != "" && strings.HasPrefix(u.Path, "/") && !strings.HasPrefix(u.Path, "//") {
 		return u.RequestURI()
 	}
 	return def
+}
+
+// fromProxy сообщает, что запрос пришёл от доверенного внешнего веб-сервера.
+func (a *App) fromProxy(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	for _, p := range strings.Split(a.Cfg.TrustedProxy, ",") {
+		if p = strings.TrimSpace(p); p != "" && p == host {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) clientIP(r *http.Request) string {
@@ -404,7 +418,10 @@ func (a *App) clientIP(r *http.Request) string {
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	if a.Cfg.TrustedProxy != "" && host == a.Cfg.TrustedProxy {
+	if a.fromProxy(r) {
+		if ip := net.ParseIP(strings.TrimSpace(r.Header.Get("X-Real-IP"))); ip != nil {
+			return ip.String()
+		}
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 			p := strings.Split(xff, ",")
 			if ip := net.ParseIP(strings.TrimSpace(p[len(p)-1])); ip != nil {
@@ -415,12 +432,16 @@ func (a *App) clientIP(r *http.Request) string {
 	return host
 }
 
+// isHTTPS сообщает, что пользователь работает по HTTPS: программа принимает TLS сама,
+// либо TLS завершается на внешнем веб-сервере (external_url с https или заголовок от доверенного прокси).
 func (a *App) isHTTPS(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
 	}
-	host, _, _ := net.SplitHostPort(r.RemoteAddr)
-	return a.Cfg.TrustedProxy != "" && host == a.Cfg.TrustedProxy && r.Header.Get("X-Forwarded-Proto") == "https"
+	if _, https := a.Cfg.externalHost(); https {
+		return true
+	}
+	return a.fromProxy(r) && r.Header.Get("X-Forwarded-Proto") == "https"
 }
 
 // ---------- маршрутизация и защитная обвязка ----------
@@ -514,11 +535,23 @@ func (a *App) wrap(roles string, big bool, h handler) http.HandlerFunc {
 	}
 }
 
+// sameOrigin проверяет, что запрос отправлен со страницы самого портала. За внешним веб-сервером
+// заголовок Host может отличаться от адреса в браузере, поэтому допускаются также узел из
+// external_url и X-Forwarded-Host от доверенного прокси.
 func (a *App) sameOrigin(r *http.Request) bool {
 	for _, hname := range []string{"Origin", "Referer"} {
 		if v := r.Header.Get(hname); v != "" {
 			u, err := url.Parse(v)
-			return err == nil && u.Host == r.Host
+			if err != nil {
+				return false
+			}
+			if u.Host == r.Host {
+				return true
+			}
+			if ext, _ := a.Cfg.externalHost(); ext != "" && strings.EqualFold(u.Host, ext) {
+				return true
+			}
+			return a.fromProxy(r) && strings.EqualFold(u.Host, strings.TrimSpace(r.Header.Get("X-Forwarded-Host")))
 		}
 	}
 	return true // заголовков нет (не браузер): защита обеспечивается CSRF-токеном и SameSite

@@ -45,8 +45,9 @@ sudo sh deploy/install.sh lms.example.ru "Название организаци�
 | `data_dir` | каталог данных; по умолчанию `/opt/kafedra/data` |
 | `log_file` | файл журнала работы службы, по умолчанию `/var/log/kafedra/kafedra.log`; сюда же дублируются события безопасности (строки `AUDIT`). Значение `"-"` — только стандартный вывод (journald) |
 | `audit_dir` | каталог журнала событий безопасности; пусто — `<data_dir>/audit` |
-| `tls_cert`, `tls_key` | сертификат и ключ; если пусто — HTTP (только за обратным прокси с TLS или для пробы) |
-| `trusted_proxy` | IP обратного прокси; только от него принимаются `X-Forwarded-For` и `X-Forwarded-Proto` |
+| `tls_cert`, `tls_key` | сертификат и ключ; оба пусто — работа без сертификатов по HTTP за общим веб-сервером (раздел 8) |
+| `external_url` | адрес портала для пользователей при работе за веб-сервером, например `https://lms.example.ru` |
+| `trusted_proxy` | IP веб-сервера (несколько — через запятую); только от него принимаются `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host` |
 | `timezone` | часовой пояс, например `Europe/Moscow`, `Asia/Yekaterinburg` |
 | `portal_name` | первая строка заголовка — название портала |
 | `org_name` | вторая строка заголовка — название организации |
@@ -99,6 +100,27 @@ kafedra gencert -host имя -out каталог
 
 ## 6. Обновление
 
+### Переход с версии 1.0 (данные в `/var/lib/kafedra`, конфигурация в `/etc/kafedra`)
+
+```sh
+systemctl stop kafedra
+systemctl unmask kafedra 2>/dev/null; rm -f /etc/systemd/system/kafedra.service
+install -d -m 0755 /opt/kafedra
+mv /var/lib/kafedra /opt/kafedra/data
+mv /etc/kafedra/config.json /opt/kafedra/config.json
+# в config.json: "data_dir": "/opt/kafedra/data"; при работе без сертификатов tls_cert и tls_key — пустые
+install -d -m 0750 -o kafedra -g kafedra /var/log/kafedra
+install -m 0755 dist/kafedra-linux-amd64 /opt/kafedra/kafedra
+chown -R kafedra:kafedra /opt/kafedra/data /opt/kafedra/config.json
+chmod 0600 /opt/kafedra/config.json
+install -m 0644 deploy/kafedra.service /etc/systemd/system/kafedra.service
+systemctl daemon-reload && systemctl enable --now kafedra
+```
+
+Старый файл конфигурации подходит: недостающие параметры получают значения по умолчанию, устаревший `system_name` игнорируется. Настройки безопасности, заданные в интерфейсе версии 1.0, не переносятся — задайте их заново (раздел `settings`).
+
+### Обычное обновление
+
 Остановить службу, сделать копию, заменить `/opt/kafedra/kafedra`, сверить SHA-256, запустить. Формат хранилища совместим вперёд: неизвестные поля и коллекции сохраняются.
 
 ## 7. Контроль и диагностика
@@ -107,9 +129,50 @@ kafedra gencert -host имя -out каталог
 - «Журнал событий» — просмотр, фильтр, проверка целостности; то же из консоли: `kafedra audit-verify`.
 - «Система» — версия, контрольная сумма исполняемого файла, сеансы, объём данных.
 
-## 8. Работа за обратным прокси
+## 8. Работа без сертификатов, за общим веб-сервером
 
-Если TLS завершается на прокси (в том числе на сертифицированном средстве с ГОСТ-TLS): `listen: "127.0.0.1:8080"`, пустые `tls_cert`/`tls_key`, `trusted_proxy: "127.0.0.1"`. Прокси обязан передавать `X-Forwarded-For`, `X-Forwarded-Proto: https` и исходный `Host`; лимит размера тела запроса на прокси должен быть не меньше лимита загрузки файлов.
+Штатный режим для контура, где HTTPS обеспечивает общий веб-сервер, а трафик перенаправляется на порт внутреннего сервера. Сертификаты программе не нужны: оставьте `tls_cert` и `tls_key` пустыми — она принимает обычный HTTP на своём порту.
+
+```json
+{
+  "listen": ":4444",
+  "tls_cert": "",
+  "tls_key": "",
+  "external_url": "https://lms.example.ru",
+  "trusted_proxy": "10.0.0.5"
+}
+```
+
+| Параметр | Зачем |
+|---|---|
+| `external_url` | адрес, который пользователи набирают в браузере. По нему программа понимает, что пользователь работает по HTTPS (защищённая сеансовая кука, HSTS), и принимает формы, даже если веб-сервер подменяет заголовок `Host` |
+| `trusted_proxy` | IP-адрес веб-сервера, с которого приходят запросы (несколько — через запятую). Только от него принимаются `X-Real-IP` / `X-Forwarded-For`, чтобы в журнале событий и при блокировках учитывался адрес пользователя, а не веб-сервера |
+
+Оба параметра необязательны — без них программа тоже запустится и будет работать, но в журнале событий будет адрес веб-сервера, а ограничение числа попыток входа станет общим для всех пользователей.
+
+Установка сразу в этом режиме:
+
+```sh
+sudo NO_TLS=1 LISTEN=:4444 EXTERNAL_URL=https://lms.example.ru TRUSTED_PROXY=10.0.0.5 \
+  sh deploy/install.sh lms.example.ru "Организация" "Портал"
+```
+
+Пример для nginx на общем веб-сервере:
+
+```nginx
+location / {
+    proxy_pass http://10.0.0.20:4444;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto https;
+    client_max_body_size 210m;       # не меньше max_upload_mb
+    proxy_request_buffering off;     # загрузка больших файлов
+    proxy_read_timeout 300s;
+}
+```
+
+Ограничения: портал должен публиковаться в корне отдельного имени (`https://lms.example.ru/`), публикация в подкаталоге (`https://example.ru/lms/`) не поддерживается. Закройте порт программы межсетевым экраном для всех, кроме веб-сервера: при заданном `external_url` с `https` вход напрямую по HTTP намеренно не работает (кука сеанса передаётся только по HTTPS).
 
 ## 9. Работа в закрытом контуре (без интернета)
 
@@ -128,10 +191,11 @@ kafedra gencert -host имя -out каталог
 
 | Признак | Действие |
 |---|---|
+| `Unit kafedra.service is masked` | файл службы пуст или служба замаскирована: `systemctl unmask kafedra; rm -f /etc/systemd/system/kafedra.service; install -m 0644 deploy/kafedra.service /etc/systemd/system/; systemctl daemon-reload; systemctl start kafedra` |
 | «хранилище уже используется другим процессом» | остановите службу перед командами `backup`/`restore`/`passwd` |
 | «файл ключа доступен посторонним» | `chmod 600 master.key`, владелец — `kafedra` |
 | «файл журнала недоступен» при запуске | создайте `/var/log/kafedra` с правами для учётной записи службы либо измените `log_file` |
 | Коды второго фактора не подходят | проверьте время на сервере и телефоне; при необходимости увеличьте `totp_time_window_steps` |
 | Администратор потерял устройство 2ФА | `systemctl stop kafedra; runuser -u kafedra -- /opt/kafedra/kafedra passwd -login admin; systemctl start kafedra` |
-| После входа снова страница входа (HTTP без TLS за прокси) | проверьте `trusted_proxy` и заголовок `X-Forwarded-Proto` |
-| «Запрос отклонён» при отправке форм за прокси | прокси подменяет `Host`; настройте передачу исходного заголовка |
+| После входа снова страница входа | задан `external_url` с `https`, а портал открыт напрямую по HTTP — открывайте через веб-сервер либо уберите `external_url` |
+| «Запрос отклонён» при отправке форм за веб-сервером | укажите `external_url` — адрес портала в браузере |

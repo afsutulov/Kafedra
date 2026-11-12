@@ -3,8 +3,10 @@
 # сторонних модулей у проекта нет.
 set -eu
 cd "$(dirname "$0")"
-VERSION="${VERSION:-1.2.0}"
+VERSION="${VERSION:-1.2.1}"
 export CGO_ENABLED=0 GOFLAGS=-mod=mod GOPROXY=off
+# защита комплекта поставки: служебные файлы не должны быть пустыми
+for f in deploy/kafedra.service deploy/install.sh; do [ -s "$f" ] || { echo "Пустой файл: $f"; exit 1; }; done
 go vet ./...
 go test ./...
 mkdir -p dist
