@@ -129,12 +129,18 @@ type Attempt struct {
 	Deadline  time.Time
 	Finished  time.Time
 	Done      bool
-	Questions []Question // снимок выданных вопросов (в порядке выдачи)
+	Grading   *AttemptGrading `json:",omitempty"`
+	Questions []Question      // снимок выданных вопросов (в порядке выдачи)
 	Answers   map[string]Answer
 	Score     float64
 	MaxScore  float64
 	Points    float64 // баллы в журнал
 	IP        string
+}
+
+type AttemptGrading struct {
+	MaxPoints   float64
+	PassPercent int
 }
 
 // Submission — работа, сданная по заданию.
@@ -216,6 +222,22 @@ type Post struct {
 	Created  time.Time
 }
 
+// Certificate — выданный сертификат о прохождении курса. Сведения фиксируются на момент выдачи.
+type Certificate struct {
+	ID          string
+	Number      string
+	UserID      string
+	CourseID    string
+	StudentName string
+	CourseTitle string
+	OrgName     string
+	Teachers    string
+	Percent     float64
+	Issued      time.Time
+	PDFFileID   string `json:",omitempty"`
+	PDFHash     string `json:",omitempty"`
+}
+
 // PortfolioEntry — запись электронного портфолио учащегося.
 type PortfolioEntry struct {
 	ID          string
@@ -254,7 +276,7 @@ type Session struct {
 	Seen        time.Time
 	IP          string
 	UA          string
-	MFA         bool   // второй фактор пройден либо не требуется
+	MFAVerified string `json:",omitempty"` // версия секрета, подтверждённая в этом сеансе
 	PendingTOTP string // секрет на этапе подключения (зашифрован)
 }
 
@@ -270,6 +292,7 @@ type FileMeta struct {
 	CourseID string
 	Scope    string
 	Created  time.Time
+	ItemID   string `json:",omitempty"`
 }
 
 // Settings — настраиваемые администратором параметры.
@@ -295,7 +318,8 @@ type Settings struct {
 	AllowedExt     string `json:"allowed_extensions"`
 	MaxUploadMB    int    `json:"max_upload_mb"`
 	Banner         string `json:"login_banner"`
-	TeacherCourses bool   `json:"teachers_create_courses"` // преподаватели могут создавать курсы сами
+	TeacherImport  bool   `json:"teachers_import_students"` // преподаватели могут добавлять учащихся из Excel
+	TeacherCourses bool   `json:"teachers_create_courses"`  // преподаватели могут создавать курсы сами
 }
 
 // DefaultSettings возвращает безопасные значения по умолчанию.
@@ -308,6 +332,6 @@ func DefaultSettings() Settings {
 		AllowedExt:     "pdf docx doc pptx ppt xlsx xls odt odp ods txt md csv png jpg jpeg gif webp mp4 webm mp3 ogg zip 7z html go py c cpp h java js ts sql json xml ipynb",
 		MaxUploadMB:    200,
 		Banner:         "Доступ разрешён только зарегистрированным пользователям. Действия в системе регистрируются.",
-		TeacherCourses: true,
+		TeacherCourses: true, TeacherImport: true,
 	}
 }

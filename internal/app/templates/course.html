@@ -5,6 +5,15 @@
 {{if eq .Tab "materials"}}
   {{if .Course.Description}}<div class="prose">{{.Desc}}</div>{{end}}
   {{if .Total}}<p><progress max="{{.Total}}" value="{{.Done}}"></progress><span class="muted">Выполнено {{.Done}} из {{.Total}}</span></p>{{end}}
+  {{if or .Completed .Cert}}
+  <div class="alert alert-ok">{{if .Completed}}<strong>Обучение по курсу завершено.</strong> Все разделы пройдены.{{else}}<strong>Ранее выданный сертификат</strong>{{end}}
+    <div class="row cert-actions">
+      {{if .Completed}}<a class="ghost-btn link-btn" href="/courses/{{.Course.ID}}/zayavlenie.docx">Заявление на выдачу сертификата (.docx)</a>{{end}}
+      {{if .Cert}}<a class="primary-btn link-btn" href="/certificates/{{.Cert.ID}}">Сертификат № {{.Cert.Number}} (PDF)</a>
+      {{else}}<form method="post" action="/courses/{{.Course.ID}}/certificate" class="inline">{{template "csrf" .}}<button class="primary-btn" type="submit">Получить сертификат (PDF)</button></form>{{end}}
+    </div>
+  </div>
+  {{end}}
   {{range .Sections}}{{$sec := .Section}}
   <h3>{{.Section.Title}}</h3>
   <ul class="items">
@@ -85,9 +94,22 @@
   <ul>{{range .Teachers}}<li>{{.FullName}}{{if .Email}} — <a href="mailto:{{.Email}}">{{.Email}}</a>{{end}}</li>{{else}}<li class="muted">не назначены</li>{{end}}</ul>
   {{if .Manage}}
   <h3>Учащиеся</h3>
-  <div class="table-wrap"><table><thead><tr><th>ФИО</th><th>Группа</th><th>Последний вход</th><th></th></tr></thead><tbody>
-  {{range .Students}}<tr><td>{{.FullName}}</td><td>{{index $.GroupNames .GroupID}}</td><td>{{dt .LastLogin}}</td><td><a href="/portfolio?user={{.ID}}">Портфолио</a></td></tr>
-  {{else}}<tr><td colspan="4" class="muted">Курсу не назначены группы либо в группах нет учащихся.</td></tr>{{end}}
+  {{if .CanImport}}
+  <details><summary>Добавить группу учащихся из Excel</summary>
+  <form method="post" action="/courses/{{.Course.ID}}/students/import" enctype="multipart/form-data" class="stack-form">{{template "csrf" .}}
+    <p>1. <a href="/templates/students.xlsx">Скачайте шаблон (.xlsx)</a> и внесите в него список группы: одна строка — один учащийся.<br>2. Укажите название группы и загрузите заполненный файл.<br>3. В ответ скачается файл с логинами и временными паролями — раздайте их учащимся. После этого обновите страницу.</p>
+    <div class="form-grid">
+      <label>Название группы<input type="text" name="group" required maxlength="60" placeholder="например, ПИ-21"></label>
+      <label>Заполненный шаблон<input type="file" name="file" accept=".xlsx" required></label>
+    </div>
+    <p class="note">Если группы с таким названием ещё нет, она будет создана и назначена этому курсу. Пополнять можно только группы своих курсов.</p>
+    <div class="row"><button class="soft-btn" type="submit">Создать учётные записи</button></div>
+  </form></details>
+  {{end}}
+  <div class="table-wrap"><table><thead><tr><th>ФИО</th><th>Группа</th><th>Последний вход</th><th>Сертификат</th><th></th></tr></thead><tbody>
+  {{range .Students}}{{$ct := index $.Certs .ID}}<tr><td>{{.FullName}}</td><td>{{index $.GroupNames .GroupID}}</td><td>{{dt .LastLogin}}</td>
+    <td>{{if $ct.ID}}<a href="/certificates/{{$ct.ID}}">№ {{$ct.Number}}</a> <span class="muted">{{date $ct.Issued}}</span>{{end}}</td><td><a href="/portfolio?user={{.ID}}">Портфолио</a></td></tr>
+  {{else}}<tr><td colspan="5" class="muted">Курсу не назначены группы либо в группах нет учащихся.</td></tr>{{end}}
   </tbody></table></div>
   {{end}}
 {{end}}

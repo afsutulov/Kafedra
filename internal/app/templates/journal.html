@@ -7,7 +7,7 @@
     <select name="group" id="group">{{range .Course.GroupIDs}}<option value="{{.}}" {{if eq . $.Group}}selected{{end}}>{{index $.GroupNames .}}</option>{{end}}</select>
     <button class="ghost-btn" type="submit">Показать</button>
   </form>
-  <a class="ghost-btn link-btn" href="/courses/{{.Course.ID}}/journal.csv?group={{.Group}}">Выгрузить CSV</a>
+  <span class="row"><a class="soft-btn link-btn" href="/courses/{{.Course.ID}}/journal.xlsx?group={{.Group}}">Выгрузить в Excel</a><a class="ghost-btn link-btn" href="/courses/{{.Course.ID}}/journal.csv?group={{.Group}}">CSV</a></span>
 </div>
 {{if not .Course.GroupIDs}}<div class="alert alert-info">Курсу не назначены группы. Назначьте их в настройках курса.</div>{{end}}
 <form method="post" action="/courses/{{.Course.ID}}/grades">{{template "csrf" .}}<input type="hidden" name="group" value="{{.Group}}">

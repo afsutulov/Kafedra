@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -23,14 +24,15 @@ type dumper interface {
 
 // DB — экземпляр хранилища.
 type DB struct {
-	mu    sync.RWMutex
-	dir   string
-	raw   map[string]map[string]json.RawMessage // коллекции, ещё не привязанные к типу
-	colls map[string]dumper
-	jf    *os.File
-	lock  *os.File
-	seq   uint64
-	jsize int64
+	mu       sync.RWMutex
+	dir      string
+	raw      map[string]map[string]json.RawMessage // коллекции, ещё не привязанные к типу
+	colls    map[string]dumper
+	jf       *os.File
+	lock     *os.File
+	seq      uint64
+	jsize    int64
+	writeErr error
 	// SyncWrites включает fsync после каждой операции записи (надёжность важнее скорости).
 	SyncWrites bool
 	// CompactAt — размер журнала в байтах, при превышении которого выполняется сжатие.
@@ -52,31 +54,47 @@ type entry struct {
 	D json.RawMessage `json:"d,omitempty"`
 }
 
-// Open открывает (или создаёт) хранилище в каталоге dir.
-func Open(dir string) (*DB, error) {
+// LockDir исключает одновременный запуск службы и изменение данных при восстановлении.
+func LockDir(dir string) (*os.File, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	// исключительная блокировка каталога: одновременно с хранилищем работает только один процесс
-	lf, err := os.OpenFile(filepath.Join(dir, "LOCK"), os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := os.OpenFile(filepath.Join(dir, "LOCK"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		lf.Close()
-		return nil, errors.New("хранилище уже используется другим процессом (остановите службу или используйте её собственные средства)")
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("не удалось заблокировать хранилище: %w", err)
 	}
+	return f, nil
+}
+
+func Open(dir string) (*DB, error) {
+	lock, err := LockDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	db, err := OpenLocked(dir, lock)
+	if err != nil {
+		lock.Close()
+	}
+	return db, err
+}
+
+// OpenLocked принимает владение блокировкой только при успешном открытии.
+func OpenLocked(dir string, lock *os.File) (*DB, error) {
 	db := &DB{dir: dir, raw: map[string]map[string]json.RawMessage{}, colls: map[string]dumper{},
-		SyncWrites: true, CompactAt: 32 << 20, lock: lf}
+		SyncWrites: true, CompactAt: 32 << 20, lock: lock}
 	if b, err := os.ReadFile(filepath.Join(dir, "snapshot.json")); err == nil {
 		var s snapshot
 		if err := json.Unmarshal(b, &s); err != nil {
 			return nil, fmt.Errorf("повреждён снимок хранилища: %w", err)
 		}
-		db.seq = s.Seq
-		if s.Colls != nil {
-			db.raw = s.Colls
+		if s.Colls == nil {
+			return nil, errors.New("в снимке хранилища отсутствуют коллекции")
 		}
+		db.seq, db.raw = s.Seq, s.Colls
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
@@ -94,9 +112,15 @@ func Open(dir string) (*DB, error) {
 			}
 		}
 		db.jsize = good
+	} else if !os.IsNotExist(err) {
+		return nil, err
 	}
 	f, err := os.OpenFile(jpath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
+		return nil, err
+	}
+	if err := SyncDir(dir); err != nil {
+		f.Close()
 		return nil, err
 	}
 	db.jf = f
@@ -109,24 +133,32 @@ func (db *DB) replay(r io.Reader) (int64, error) {
 	var good int64
 	for {
 		line, err := br.ReadBytes('\n')
-		if len(line) == 0 || err != nil {
-			return good, nil // конец файла либо оборванная последняя строка
+		if errors.Is(err, io.EOF) {
+			return good, nil // последняя строка без перевода строки не была записана целиком
 		}
+		if err != nil {
+			return good, err
+		}
+		corrupt := fmt.Errorf("повреждена полная запись журнала по смещению %d", good)
 		body := bytes.TrimRight(line, "\n")
 		if len(body) < 10 || body[8] != ' ' {
-			return good, nil
+			return good, corrupt
 		}
 		var sum uint32
 		if _, e := fmt.Sscanf(string(body[:8]), "%08x", &sum); e != nil || crc32.ChecksumIEEE(body[9:]) != sum {
-			return good, nil
+			return good, corrupt
 		}
 		var e entry
-		if json.Unmarshal(body[9:], &e) != nil {
-			return good, nil
+		if json.Unmarshal(body[9:], &e) != nil || e.S == 0 || e.C == "" || e.I == "" ||
+			(e.O != "d" && (e.O != "p" || len(e.D) == 0)) {
+			return good, corrupt
 		}
 		good += int64(len(line))
 		if e.S <= db.seq {
 			continue // уже учтено в снимке
+		}
+		if e.S != db.seq+1 {
+			return good - int64(len(line)), corrupt
 		}
 		db.seq = e.S
 		m := db.raw[e.C]
@@ -143,19 +175,31 @@ func (db *DB) replay(r io.Reader) (int64, error) {
 }
 
 func (db *DB) appendEntry(c, op, id string, data []byte) error {
-	db.seq++
-	b, err := json.Marshal(entry{S: db.seq, C: c, O: op, I: id, D: data})
+	if db.writeErr != nil {
+		return db.writeErr
+	}
+	b, err := json.Marshal(entry{S: db.seq + 1, C: c, O: op, I: id, D: data})
 	if err != nil {
 		return err
 	}
 	line := fmt.Appendf(nil, "%08x %s\n", crc32.ChecksumIEEE(b), b)
-	if _, err := db.jf.Write(line); err != nil {
+	_, err = db.jf.Write(line)
+	if err == nil && db.SyncWrites {
+		err = db.jf.Sync()
+	}
+	if err != nil {
+		rollback := db.jf.Truncate(db.jsize)
+		if rollback == nil {
+			rollback = db.jf.Sync()
+		}
+		if rollback != nil {
+			db.writeErr = fmt.Errorf("запись журнала заблокирована после сбоя: %w", errors.Join(err, rollback))
+			return db.writeErr
+		}
 		return err
 	}
+	db.seq++
 	db.jsize += int64(len(line))
-	if db.SyncWrites {
-		return db.jf.Sync()
-	}
 	return nil
 }
 
@@ -189,6 +233,9 @@ func (db *DB) Compact() error {
 }
 
 func (db *DB) compactLocked() error {
+	if db.writeErr != nil {
+		return db.writeErr
+	}
 	b, err := db.buildSnapshot()
 	if err != nil {
 		return err
@@ -208,11 +255,12 @@ func (db *DB) Close() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	err := db.compactLocked()
-	if e := db.jf.Close(); err == nil {
-		err = e
-	}
-	db.lock.Close()
-	return err
+	return errors.Join(err, db.Release())
+}
+
+// Release закрывает дескрипторы без изменения файлов.
+func (db *DB) Release() error {
+	return errors.Join(db.jf.Close(), db.lock.Close())
 }
 
 // WriteFileAtomic записывает файл через временный файл с fsync и переименованием.
@@ -235,11 +283,16 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	if err := os.Rename(tmp, path); err != nil {
 		return err
 	}
-	if d, err := os.Open(filepath.Dir(path)); err == nil {
-		d.Sync()
-		d.Close()
+	return SyncDir(filepath.Dir(path))
+}
+
+func SyncDir(path string) error {
+	d, err := os.Open(path)
+	if err != nil {
+		return err
 	}
-	return nil
+	defer d.Close()
+	return d.Sync()
 }
 
 // Coll — типизированная коллекция документов.
@@ -295,7 +348,9 @@ func (c *Coll[T]) putLocked(id string, v T) error {
 	}
 	c.m[id] = stored
 	if c.db.CompactAt > 0 && c.db.jsize > c.db.CompactAt {
-		return c.db.compactLocked()
+		if err := c.db.compactLocked(); err != nil {
+			log.Printf("не удалось свернуть журнал хранилища: %v", err)
+		}
 	}
 	return nil
 }

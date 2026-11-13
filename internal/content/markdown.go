@@ -129,13 +129,23 @@ func splitRow(s string) []string {
 
 func table(b *strings.Builder, lines []string, i int) int {
 	head := splitRow(lines[i])
+	start := i
 	i += 2
+	end := i
+	for end < len(lines) && strings.Contains(lines[end], "|") && strings.TrimSpace(lines[end]) != "" {
+		end++
+	}
+	const maxTableCells = 20000
+	if len(head) == 0 || len(head) > 100 || end-i+1 > maxTableCells/len(head) {
+		b.WriteString("<pre>" + html.EscapeString(strings.Join(lines[start:end], "\n")) + "</pre>\n")
+		return end
+	}
 	b.WriteString("<div class=\"table-wrap\"><table>\n<thead><tr>")
 	for _, c := range head {
 		b.WriteString("<th>" + inline(c, 0) + "</th>")
 	}
 	b.WriteString("</tr></thead>\n<tbody>\n")
-	for i < len(lines) && strings.Contains(lines[i], "|") && strings.TrimSpace(lines[i]) != "" {
+	for i < end {
 		cells := splitRow(lines[i])
 		b.WriteString("<tr>")
 		for j := range head {

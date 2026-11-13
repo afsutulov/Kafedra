@@ -85,7 +85,7 @@ func parseXML(r io.Reader) (*node, error) {
 			}
 		case xml.CharData:
 			top := stack[len(stack)-1]
-			if top.name == "t" || top.name == "instrText" {
+			if top.name == "t" || top.name == "instrText" || top.name == "v" {
 				top.text += string(t)
 			}
 		}

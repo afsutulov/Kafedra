@@ -32,6 +32,7 @@
       {{template "content" .}}
     </section>
   </main>
+  <button type="button" id="to-top" class="to-top hidden" title="В начало страницы" aria-label="В начало страницы">↑ Вверх</button>
   <footer class="footer"><span>{{.Product}}</span><span>© {{.Vendor}}</span></footer>
 </div>
 {{else}}
@@ -62,4 +63,13 @@
   {{else if eq .Type "html"}}<div class="attach"><div class="attach-head"><strong>{{.Meta.Name}}</strong> <a href="/files/{{.Meta.ID}}?dl=1">Скачать</a></div><iframe class="doc-frame" sandbox src="/files/{{.Meta.ID}}" title="{{.Meta.Name}}"></iframe></div>
   {{else}}<div class="attach file-line"><span class="file-ext">{{.Meta.Ext}}</span> <a href="/files/{{.Meta.ID}}">{{.Meta.Name}}</a> <span class="muted">{{size .Meta.Size}}</span></div>{{end}}
 {{end}}
+{{end}}
+{{define "studentdocs"}}
+<div class="glass-subcard">
+  <strong>Документы слушателя</strong>
+  <p>Скачайте и заполните анкету. Отправьте её преподавателю на указанный служебный адрес. Согласие скачайте отдельным бланком. Порядок заполнения и передачи подписанного согласия уточните у оператора персональных данных.</p>
+  <p class="row"><a class="soft-btn link-btn" href="/docs/anketa.docx">Анкета слушателя (.docx)</a><a class="soft-btn link-btn" href="/docs/soglasie.docx">Согласие на обработку персональных данных (.docx)</a></p>
+  {{if .TeacherMails}}<p class="note">Преподаватели: {{range $i, $t := .TeacherMails}}{{if $i}}; {{end}}{{$t.FullName}}{{if $t.Email}} — <a href="mailto:{{$t.Email}}">{{$t.Email}}</a>{{else}} — адрес уточните у куратора{{end}}{{end}}</p>
+  {{else}}<p class="note">Адрес электронной почты преподавателя уточните у куратора группы.</p>{{end}}
+</div>
 {{end}}

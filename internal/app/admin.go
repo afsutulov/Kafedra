@@ -1,13 +1,11 @@
 package app
 
 import (
-	"archive/zip"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -21,6 +19,11 @@ var reLogin = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{2,39}$`)
 
 // CreateUser создаёт учётную запись с временным паролем (смена при первом входе).
 func (a *App) CreateUser(login, name, email, role, groupID, password string) (User, error) {
+	return a.createUser(login, name, email, role, groupID, a.Keys.HashPassword(password))
+}
+
+// createUser создаёт учётную запись с заранее вычисленным хешем пароля.
+func (a *App) createUser(login, name, email, role, groupID, passHash string) (User, error) {
 	login = strings.ToLower(strings.TrimSpace(login))
 	name = strings.TrimSpace(name)
 	if !reLogin.MatchString(login) {
@@ -38,7 +41,7 @@ func (a *App) CreateUser(login, name, email, role, groupID, password string) (Us
 		groupID = ""
 	}
 	u := User{ID: secure.NewID(), Login: login, FullName: name, Email: strings.TrimSpace(email), Role: role, GroupID: groupID,
-		PassHash: a.Keys.HashPassword(password), PassChanged: time.Now(), MustChange: true, Created: time.Now()}
+		PassHash: passHash, PassChanged: time.Now(), MustChange: true, Created: time.Now()}
 	return u, a.Users.Put(u.ID, u)
 }
 
@@ -111,7 +114,14 @@ func (c *Ctx) adminUserSave() {
 	if _, ok := c.Groups.Get(c.F("group")); ok && role == RoleStudent {
 		groupID = c.F("group")
 	}
-	c.Users.Update(u.ID, func(x *User) error {
+	resetMFA := c.F("reset_mfa") == "1"
+	if disabled || role != u.Role || resetMFA {
+		if err := c.revokeSessions(u.ID, ""); err != nil {
+			c.Fail(http.StatusServiceUnavailable, "Не удалось завершить сеансы пользователя.")
+			return
+		}
+	}
+	if err := c.Users.Update(u.ID, func(x *User) error {
 		if x.Role != role {
 			changes = append(changes, "роль: "+roleName(x.Role)+" → "+roleName(role))
 		}
@@ -124,16 +134,14 @@ func (c *Ctx) adminUserSave() {
 			x.LockedUntil, x.Failed = time.Time{}, 0
 			changes = append(changes, "снята блокировка")
 		}
-		if c.F("reset_mfa") == "1" {
-			x.TOTPEnabled, x.TOTPSecret = false, ""
+		if resetMFA {
+			x.TOTPEnabled, x.TOTPSecret, x.TOTPStep = false, "", 0
 			changes = append(changes, "сброшен второй фактор")
 		}
 		return nil
-	})
-	if disabled || role != u.Role { // изменение прав вступает в силу немедленно
-		for _, s := range c.Sessions.Find(func(s *Session) bool { return s.UserID == u.ID }) {
-			c.Sessions.Delete(s.ID)
-		}
+	}); err != nil {
+		c.Fail(http.StatusServiceUnavailable, "Не удалось изменить учётную запись.")
+		return
 	}
 	c.Log("изменение учётной записи", u.Login, true, strings.Join(changes, "; "))
 	c.Redirect(back, "Учётная запись сохранена.")
@@ -146,12 +154,13 @@ func (c *Ctx) adminUserReset() {
 		return
 	}
 	pw := secure.GeneratePassword(max(c.S().PwMinLen, 14))
+	if err := c.revokeSessions(u.ID, ""); err != nil {
+		c.Fail(http.StatusServiceUnavailable, "Не удалось завершить сеансы пользователя.")
+		return
+	}
 	if err := c.setPassword(u.ID, pw, secure.Policy{}, c.S().PwHistory, true); err != nil {
 		c.Redirect("/admin/users/"+u.ID, "!"+err.Error())
 		return
-	}
-	for _, s := range c.Sessions.Find(func(s *Session) bool { return s.UserID == u.ID }) {
-		c.Sessions.Delete(s.ID)
 	}
 	c.Log("сброс пароля администратором", u.Login, true, "")
 	u, _ = c.Users.Get(u.ID)
@@ -165,6 +174,11 @@ func (a *App) DeleteUser(id string) {
 	}
 	for _, x := range a.Attempts.Find(func(x *Attempt) bool { return x.UserID == id }) {
 		a.Attempts.Delete(x.ID)
+	}
+	for _, x := range a.Certs.Find(func(x *Certificate) bool { return x.UserID == id }) {
+		if err := a.Certs.Delete(x.ID); err == nil {
+			a.removeFile(x.PDFFileID)
+		}
 	}
 	for _, x := range a.Subs.Find(func(x *Submission) bool { return x.UserID == id }) {
 		a.removeFile(x.FileID)
@@ -231,14 +245,8 @@ func (c *Ctx) adminUserImport() {
 	text := strings.TrimPrefix(strings.ToValidUTF8(string(raw), "?"), "\xef\xbb\xbf")
 	roles := map[string]string{"student": RoleStudent, "учащийся": RoleStudent, "студент": RoleStudent, "": RoleStudent,
 		"teacher": RoleTeacher, "преподаватель": RoleTeacher, "admin": RoleAdmin, "администратор": RoleAdmin}
-	groups := map[string]string{}
-	for _, g := range c.Groups.All() {
-		groups[strings.ToLower(g.Name)] = g.ID
-	}
-	var out strings.Builder
-	out.WriteString("\xef\xbb\xbfлогин;ФИО;временный пароль;результат\r\n")
-	created := 0
-	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+	var rows []importRow
+	for i, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
@@ -246,33 +254,37 @@ func (c *Ctx) adminUserImport() {
 		for len(p) < 5 {
 			p = append(p, "")
 		}
-		for i := range p {
-			p[i] = strings.TrimSpace(p[i])
+		for j := range p {
+			p[j] = strings.TrimSpace(p[j])
 		}
-		role, okRole := roles[strings.ToLower(p[2])]
 		if strings.EqualFold(p[0], "логин") || strings.EqualFold(p[0], "login") {
 			continue // строка заголовка
 		}
-		res, pw := "создан", secure.GeneratePassword(max(c.S().PwMinLen, 14))
-		gid := ""
+		row := importRow{Line: i + 1, Login: p[0], Name: p[1], Group: p[3], Email: p[4]}
+		role, okRole := roles[strings.ToLower(p[2])]
 		if !okRole {
-			res, pw = "ошибка: неизвестная роль", ""
-		} else {
-			if role == RoleStudent && p[3] != "" {
-				gid = groups[strings.ToLower(p[3])]
-				if gid == "" {
-					gid = secure.NewID()
-					c.Groups.Put(gid, Group{ID: gid, Name: p[3]})
-					groups[strings.ToLower(p[3])] = gid
-				}
-			}
-			if _, err := c.CreateUser(p[0], p[1], p[4], role, gid, pw); err != nil {
-				res, pw = "ошибка: "+err.Error(), ""
-			} else {
-				created++
-			}
+			row.Result = "ошибка: неизвестная роль"
 		}
-		out.WriteString(csvCell(p[0]) + ";" + csvCell(p[1]) + ";" + csvCell(pw) + ";" + csvCell(res) + "\r\n")
+		row.Role = role
+		rows = append(rows, row)
+	}
+	if len(rows) > 5000 {
+		c.Redirect("/admin/users", "!За один раз можно загрузить не более 5000 строк.")
+		return
+	}
+	created, allowed := c.bulkCreate(rows, RoleAdmin, "")
+	if !allowed {
+		c.Deny()
+		return
+	}
+	var out strings.Builder
+	out.WriteString("\xef\xbb\xbfлогин;ФИО;временный пароль;результат\r\n")
+	for _, r := range rows {
+		pw := ""
+		if r.Created {
+			pw = r.pw
+		}
+		out.WriteString(csvCell(r.Login) + ";" + csvCell(r.Name) + ";" + csvCell(pw) + ";" + csvCell(r.Result) + "\r\n")
 	}
 	c.Log("импорт учётных записей", "", true, fmt.Sprintf("создано: %d", created))
 	c.W.Header().Set("Content-Type", "text/csv; charset=utf-8")
@@ -364,7 +376,7 @@ func (c *Ctx) adminSettingsSave() {
 	s.Grade5 = atoi(c.F("grade5"), 85, 1, 100)
 	s.Grade4 = atoi(c.F("grade4"), 70, 1, s.Grade5)
 	s.Grade3 = atoi(c.F("grade3"), 50, 1, s.Grade4)
-	s.RatingNames, s.TeacherCourses = b("rating_names"), b("teacher_courses")
+	s.RatingNames, s.TeacherCourses, s.TeacherImport = b("rating_names"), b("teacher_courses"), b("teacher_import")
 	s.MaxUploadMB = atoi(c.F("max_upload"), 200, 1, 4096)
 	var exts []string
 	for _, e := range strings.Fields(strings.ToLower(c.F("allowed_ext"))) {
@@ -405,7 +417,11 @@ func (c *Ctx) adminAudit() {
 	var rows []secure.AuditRecord
 	total := 0
 	if sel != "" {
-		recs, _ := secure.ReadAuditFile(filepath.Join(dir, "audit-"+sel+".log"))
+		recs, err := secure.ReadAuditFile(filepath.Join(dir, "audit-"+sel+".log"))
+		if err != nil {
+			c.Fail(http.StatusServiceUnavailable, "Не удалось прочитать журнал аудита.")
+			return
+		}
 		for i := len(recs) - 1; i >= 0; i-- {
 			r := recs[i]
 			if onlyFail && r.OK {
@@ -424,7 +440,7 @@ func (c *Ctx) adminAudit() {
 }
 
 func (c *Ctx) adminAuditVerify() {
-	n, err := secure.VerifyAudit(c.Cfg.AuditPath())
+	n, err := c.Audit.Verify()
 	if err != nil {
 		c.Log("проверка целостности журнала событий", "", false, err.Error())
 		c.Redirect("/admin/audit", "!"+err.Error())
@@ -462,119 +478,4 @@ func (c *Ctx) adminSessionRevoke() {
 		c.Log("принудительное завершение сеанса", c.userName(s.UserID), true, "")
 	}
 	c.Redirect("/admin/system", "Сеанс завершён.")
-}
-
-func (c *Ctx) adminBackup() {
-	c.Log("создание резервной копии", "", true, "выгрузка через веб-интерфейс (без мастер-ключа)")
-	c.W.Header().Set("Content-Type", "application/zip")
-	c.W.Header().Set("Content-Disposition", `attachment; filename="kafedra-backup-`+time.Now().In(c.Loc).Format("20060102-1504")+`.zip"`)
-	if err := c.Backup(c.W, false); err != nil {
-		c.Log("создание резервной копии", "", false, err.Error())
-	}
-}
-
-// Backup записывает резервную копию (ZIP): снимок базы, файлы, журнал событий.
-// Мастер-ключ включается только при withKey=true; такую копию необходимо хранить в защищённом месте.
-func (a *App) Backup(w io.Writer, withKey bool) error {
-	zw := zip.NewWriter(w)
-	snap, err := a.DB.Snapshot()
-	if err != nil {
-		return err
-	}
-	put := func(name string, data []byte) error {
-		f, err := zw.Create(name)
-		if err != nil {
-			return err
-		}
-		_, err = f.Write(data)
-		return err
-	}
-	manifest, _ := json.Marshal(map[string]any{"product": "kafedra", "version": a.Version, "created": time.Now().UTC(), "with_key": withKey})
-	if err := put("manifest.json", manifest); err != nil {
-		return err
-	}
-	if err := put("db/snapshot.json", snap); err != nil {
-		return err
-	}
-	roots := map[string]string{"files": filepath.Join(a.Cfg.DataPath(), "files"), "audit": a.Cfg.AuditPath()}
-	for top, root := range roots {
-		err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() {
-				return nil
-			}
-			rel, _ := filepath.Rel(root, p)
-			f, err := zw.Create(top + "/" + filepath.ToSlash(rel))
-			if err != nil {
-				return err
-			}
-			src, err := os.Open(p)
-			if err != nil {
-				return nil // файл удалён во время копирования
-			}
-			defer src.Close()
-			_, err = io.Copy(f, src)
-			return err
-		})
-		if err != nil {
-			return err
-		}
-	}
-	if withKey {
-		if b, err := os.ReadFile(filepath.Join(a.Cfg.DataPath(), "master.key")); err == nil {
-			if err := put("master.key", b); err != nil {
-				return err
-			}
-		}
-	}
-	return zw.Close()
-}
-
-// Restore разворачивает резервную копию в каталог данных (сервис должен быть остановлен).
-func Restore(zipPath, dataDir, auditDir string) error {
-	zr, err := zip.OpenReader(zipPath)
-	if err != nil {
-		return err
-	}
-	defer zr.Close()
-	hasSnap := false
-	for _, f := range zr.File {
-		hasSnap = hasSnap || f.Name == "db/snapshot.json"
-	}
-	if !hasSnap {
-		return errors.New("архив не является резервной копией ПК «Кафедра»")
-	}
-	os.Remove(filepath.Join(dataDir, "db", "journal.jsonl"))
-	for _, f := range zr.File {
-		name := filepath.Clean(filepath.FromSlash(f.Name))
-		if name == "manifest.json" || strings.HasPrefix(name, "..") || filepath.IsAbs(name) || f.FileInfo().IsDir() {
-			continue
-		}
-		top := strings.Split(filepath.ToSlash(name), "/")[0]
-		if top != "db" && top != "files" && top != "audit" && name != "master.key" {
-			continue
-		}
-		dst := filepath.Join(dataDir, name)
-		if top == "audit" && auditDir != "" {
-			dst = filepath.Join(auditDir, strings.TrimPrefix(filepath.ToSlash(name), "audit/"))
-		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-			return err
-		}
-		rc, err := f.Open()
-		if err != nil {
-			return err
-		}
-		out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-		if err == nil {
-			_, err = io.Copy(out, rc)
-			if e := out.Close(); err == nil {
-				err = e
-			}
-		}
-		rc.Close()
-		if err != nil {
-			return err
-		}
-	}
-	return nil
 }

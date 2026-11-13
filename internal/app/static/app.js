@@ -10,6 +10,55 @@
     try { localStorage.setItem('a11y', on ? '1' : '0'); } catch (e) {}
   });
 
+  // Кнопка «показать пароль» у каждого поля ввода пароля.
+  var NS = 'http://www.w3.org/2000/svg';
+  function eyeIcon() {
+    var svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none'); svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '2'); svg.setAttribute('stroke-linecap', 'round'); svg.setAttribute('aria-hidden', 'true');
+    var eye = document.createElementNS(NS, 'path'); eye.setAttribute('d', 'M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z');
+    var pupil = document.createElementNS(NS, 'circle'); pupil.setAttribute('cx', '12'); pupil.setAttribute('cy', '12'); pupil.setAttribute('r', '3');
+    var slash = document.createElementNS(NS, 'path'); slash.setAttribute('d', 'M4 4l16 16'); slash.setAttribute('class', 'slash');
+    svg.appendChild(eye); svg.appendChild(pupil); svg.appendChild(slash);
+    return svg;
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('input[type=password]'), function (input) {
+    var wrap = document.createElement('span');
+    wrap.className = 'pw-wrap';
+    input.parentNode.insertBefore(wrap, input);
+    wrap.appendChild(input);
+    var btn = document.createElement('button');
+    btn.type = 'button'; btn.className = 'pw-toggle';
+    btn.setAttribute('aria-label', 'Показать пароль'); btn.title = 'Показать пароль';
+    btn.setAttribute('aria-pressed', 'false');
+    btn.appendChild(eyeIcon());
+    btn.addEventListener('click', function () {
+      var show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      btn.classList.toggle('on', show);
+      btn.setAttribute('aria-pressed', String(show));
+      var label = show ? 'Скрыть пароль' : 'Показать пароль';
+      btn.setAttribute('aria-label', label); btn.title = label;
+    });
+    wrap.appendChild(btn);
+    // перед отправкой формы поле снова становится скрытым: браузер не запомнит пароль как обычный текст
+    if (input.form) input.form.addEventListener('submit', function () {
+      if (input.type !== 'password') btn.click();
+    });
+  });
+
+  // Кнопка «Вверх».
+  var toTop = document.getElementById('to-top');
+  if (toTop) {
+    var syncTop = function () { toTop.classList.toggle('hidden', window.scrollY < 80); };
+    window.addEventListener('scroll', syncTop, { passive: true });
+    toTop.addEventListener('click', function () {
+      var calm = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      window.scrollTo({ top: 0, behavior: calm ? 'auto' : 'smooth' });
+    });
+    syncTop();
+  }
+
   // Подтверждение необратимых действий.
   document.addEventListener('submit', function (ev) {
     var msg = ev.target.getAttribute('data-confirm');
@@ -61,14 +110,21 @@
     var saveUrl = form.getAttribute('data-save');
     var status = document.getElementById('save-status');
     var dirty = false;
+    var saving = false;
     form.addEventListener('change', function () { dirty = true; });
     form.addEventListener('input', function () { dirty = true; });
     var save = function () {
-      if (!dirty) return;
+      if (!dirty || saving) return;
       dirty = false;
+      saving = true;
       fetch(saveUrl, { method: 'POST', body: new URLSearchParams(new FormData(form)), credentials: 'same-origin' })
-        .then(function (r) { if (status) status.textContent = r.ok ? 'Ответы сохранены ' + new Date().toLocaleTimeString() : 'Не удалось сохранить ответы'; })
-        .catch(function () { dirty = true; if (status) status.textContent = 'Нет связи с сервером — ответы будут сохранены при восстановлении'; });
+        .then(function (r) {
+          var saved = r.status === 204 && !r.redirected;
+          if (!saved && r.status !== 409) dirty = true;
+          if (status) status.textContent = saved ? 'Ответы сохранены ' + new Date().toLocaleTimeString() : 'Не удалось сохранить ответы';
+        })
+        .catch(function () { dirty = true; if (status) status.textContent = 'Нет связи с сервером — ответы будут сохранены при восстановлении'; })
+        .finally(function () { saving = false; });
     };
     setInterval(save, 20000);
     var timer = document.getElementById('timer');

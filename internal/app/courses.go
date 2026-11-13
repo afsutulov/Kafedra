@@ -20,6 +20,7 @@ import (
 
 	"kafedra/internal/content"
 	"kafedra/internal/secure"
+	"kafedra/internal/store"
 )
 
 // ---------- права доступа к курсам ----------
@@ -211,6 +212,12 @@ func (c *Ctx) courseView() {
 		if manage {
 			data["Students"] = c.students(co, "")
 			data["GroupNames"] = c.groupNames()
+			certs := map[string]Certificate{}
+			for _, ct := range c.Certs.Find(func(x *Certificate) bool { return x.CourseID == co.ID }) {
+				certs[ct.UserID] = ct
+			}
+			data["Certs"] = certs
+			data["CanImport"] = c.User.Role == RoleAdmin || c.S().TeacherImport
 		}
 	default:
 		data["Tab"] = "materials"
@@ -251,6 +258,10 @@ func (c *Ctx) courseView() {
 		if !manage {
 			d, t := c.progressOf(c.User.ID, co.ID)
 			data["Done"], data["Total"] = d, t
+			data["Completed"] = t > 0 && d == t && c.completed(c.User.ID, co.ID)
+			if ct, ok := c.Certs.First(func(x *Certificate) bool { return x.UserID == c.User.ID && x.CourseID == co.ID }); ok {
+				data["Cert"] = ct
+			}
 		}
 	}
 	c.Render("course", data)
@@ -270,7 +281,7 @@ func (c *Ctx) courseEdit() {
 		return
 	}
 	c.Render("course_edit", map[string]any{"Course": co,
-		"Groups":   sortBy(c.Groups.All(), func(x, y *Group) bool { return x.Name < y.Name }),
+		"Groups":   sortBy(c.Groups.Find(func(g *Group) bool { return c.User.Role == RoleAdmin || contains(co.GroupIDs, g.ID) }), func(x, y *Group) bool { return x.Name < y.Name }),
 		"Teachers": sortBy(c.Users.Find(func(u *User) bool { return u.Role == RoleTeacher && !u.Disabled }), func(x, y *User) bool { return x.FullName < y.FullName }),
 	})
 }
@@ -286,6 +297,14 @@ func (c *Ctx) courseSave() {
 		return
 	}
 	groups := c.validIDs(c.R.Form["groups"], func(id string) bool { _, ok := c.Groups.Get(id); return ok })
+	if c.User.Role != RoleAdmin {
+		for _, gid := range groups {
+			if !contains(co.GroupIDs, gid) {
+				c.Deny()
+				return
+			}
+		}
+	}
 	teachers := c.validIDs(c.R.Form["teachers"], func(id string) bool { u, ok := c.Users.Get(id); return ok && u.Role == RoleTeacher })
 	admin := c.User.Role == RoleAdmin
 	c.Courses.Update(co.ID, func(x *Course) error {
@@ -511,12 +530,27 @@ func (c *Ctx) itemSave() {
 		c.Redirect(back, "!Название не может быть пустым.")
 		return
 	}
-	var newFiles []string
+	if it.Kind == KindTest {
+		points := atof(c.F("max_points"), 10, 0, 1000)
+		if err := c.preserveAttemptGrading(it, points); err != nil {
+			c.Redirect(back, "!"+err.Error())
+			return
+		}
+	}
+	var newFiles, importedFiles []string
+	saved := false
+	defer func() {
+		if !saved {
+			for _, id := range append(newFiles, importedFiles...) {
+				c.removeFile(id)
+			}
+		}
+	}()
 	var notes []string
 	body := c.R.FormValue("body")
 	if c.R.MultipartForm != nil {
 		for _, fh := range c.R.MultipartForm.File["attach"] {
-			m, err := c.saveUpload(fh, co.ID, "course")
+			m, err := c.saveUpload(fh, co.ID, "course", it.ID)
 			if err != nil {
 				notes = append(notes, fh.Filename+": "+err.Error())
 				continue
@@ -524,8 +558,13 @@ func (c *Ctx) itemSave() {
 			newFiles = append(newFiles, m.ID)
 		}
 		if fhs := c.R.MultipartForm.File["import"]; len(fhs) > 0 && it.Kind != KindFile && it.Kind != KindTest {
-			text, n, err := c.importDocument(fhs[0], co.ID)
+			text, n, ids, err := c.importDocument(fhs[0], it)
+			importedFiles = ids
 			if err != nil {
+				for _, id := range importedFiles {
+					c.removeFile(id)
+				}
+				importedFiles = nil
 				notes = append(notes, "импорт «"+fhs[0].Filename+"»: "+err.Error())
 			} else {
 				notes = append(notes, n...)
@@ -550,7 +589,7 @@ func (c *Ctx) itemSave() {
 			x.FileIDs = append(x.FileIDs, newFiles...)
 		case KindFile:
 			if len(newFiles) > 0 {
-				dropped, x.FileIDs = x.FileIDs, newFiles[:1]
+				dropped, x.FileIDs = append(x.FileIDs, newFiles[1:]...), newFiles[:1]
 			}
 			x.Body = body
 		case KindTask:
@@ -577,6 +616,7 @@ func (c *Ctx) itemSave() {
 		c.Redirect(back, "!Не удалось сохранить: "+err.Error())
 		return
 	}
+	saved = true
 	for _, id := range dropped {
 		c.removeFile(id)
 	}
@@ -593,6 +633,9 @@ func (c *Ctx) itemSave() {
 func (c *Ctx) deleteItem(it *Item) {
 	for _, id := range it.FileIDs {
 		c.removeFile(id)
+	}
+	for _, m := range c.Files.Find(func(f *FileMeta) bool { return f.ItemID == it.ID && f.Scope == "course" }) {
+		c.removeFile(m.ID)
 	}
 	for _, x := range c.Attempts.Find(func(x *Attempt) bool { return x.ItemID == it.ID }) {
 		c.Attempts.Delete(x.ID)
@@ -721,7 +764,7 @@ func (a *App) filePath(id string) string {
 }
 
 // storeFile проверяет и сохраняет файл в файловом хранилище.
-func (a *App) storeFile(r io.Reader, name, owner, courseID, scope string) (FileMeta, error) {
+func (a *App) storeFile(r io.Reader, name, owner, courseID, scope, itemID string) (FileMeta, error) {
 	name = cleanName(name)
 	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(name), "."))
 	if ext == "htm" {
@@ -739,7 +782,11 @@ func (a *App) storeFile(r io.Reader, name, owner, courseID, scope string) (FileM
 	if err := checkContent(ext, head); err != nil {
 		return FileMeta{}, err
 	}
-	m := FileMeta{ID: secure.NewID(), Name: name, Ext: ext, OwnerID: owner, CourseID: courseID, Scope: scope, Created: time.Now()}
+	m := FileMeta{ID: secure.NewID(), Name: name, Ext: ext, OwnerID: owner, CourseID: courseID, Scope: scope, ItemID: itemID, Created: time.Now()}
+	return a.writeFile(io.MultiReader(bytes.NewReader(head), r), m)
+}
+
+func (a *App) writeFile(r io.Reader, m FileMeta) (FileMeta, error) {
 	p := a.filePath(m.ID)
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return m, err
@@ -749,26 +796,34 @@ func (a *App) storeFile(r io.Reader, name, owner, courseID, scope string) (FileM
 		return m, err
 	}
 	h := sha256.New()
-	m.Size, err = io.Copy(io.MultiWriter(f, h), io.MultiReader(bytes.NewReader(head), r))
+	m.Size, err = io.Copy(io.MultiWriter(f, h), r)
 	if err == nil {
 		err = f.Sync()
 	}
-	f.Close()
+	err = errors.Join(err, f.Close())
+	if err == nil {
+		err = store.SyncDir(filepath.Dir(p))
+	}
+	if err == nil {
+		err = store.SyncDir(filepath.Dir(filepath.Dir(p)))
+	}
+	if err == nil {
+		m.SHA256 = hex.EncodeToString(h.Sum(nil))
+		err = a.Files.Put(m.ID, m)
+	}
 	if err != nil {
 		os.Remove(p)
-		return m, err
 	}
-	m.SHA256 = hex.EncodeToString(h.Sum(nil))
-	return m, a.Files.Put(m.ID, m)
+	return m, err
 }
 
-func (c *Ctx) saveUpload(fh *multipart.FileHeader, courseID, scope string) (FileMeta, error) {
+func (c *Ctx) saveUpload(fh *multipart.FileHeader, courseID, scope, itemID string) (FileMeta, error) {
 	f, err := fh.Open()
 	if err != nil {
 		return FileMeta{}, err
 	}
 	defer f.Close()
-	m, err := c.storeFile(f, fh.Filename, c.User.ID, courseID, scope)
+	m, err := c.storeFile(f, fh.Filename, c.User.ID, courseID, scope, itemID)
 	if err != nil {
 		c.Log("загрузка файла", fh.Filename, false, err.Error())
 		return m, err
@@ -782,40 +837,72 @@ func (a *App) removeFile(id string) {
 		return
 	}
 	if _, ok := a.Files.Get(id); ok {
-		os.Remove(a.filePath(id))
-		a.Files.Delete(id)
+		if err := a.Files.Delete(id); err == nil {
+			a.fileMu.Lock()
+			if a.backupReaders > 0 {
+				a.pendingFileRemovals = append(a.pendingFileRemovals, id)
+			} else {
+				os.Remove(a.filePath(id))
+			}
+			a.fileMu.Unlock()
+		}
 	}
 }
 
 // importDocument преобразует загруженный документ (DOCX, Markdown, текст) в текст лекции.
-func (c *Ctx) importDocument(fh *multipart.FileHeader, courseID string) (string, []string, error) {
+func (c *Ctx) importDocument(fh *multipart.FileHeader, it *Item) (string, []string, []string, error) {
 	f, err := fh.Open()
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	defer f.Close()
 	switch strings.ToLower(filepath.Ext(fh.Filename)) {
 	case ".docx":
-		return content.ImportDOCX(f, fh.Size, func(name string, data []byte) (string, error) {
-			m, err := c.storeFile(bytes.NewReader(data), name, c.User.ID, courseID, "course")
+		var ids []string
+		text, notes, err := content.ImportDOCX(f, fh.Size, func(name string, data []byte) (string, error) {
+			m, err := c.storeFile(bytes.NewReader(data), name, c.User.ID, it.CourseID, "course", it.ID)
 			if err != nil {
 				return "", err
 			}
+			ids = append(ids, m.ID)
 			return "/files/" + m.ID, nil
 		})
+		return text, notes, ids, err
 	case ".md", ".txt":
-		b, err := io.ReadAll(io.LimitReader(f, 2<<20))
+		b, err := io.ReadAll(io.LimitReader(f, (2<<20)+1))
 		if err != nil {
-			return "", nil, err
+			return "", nil, nil, err
 		}
-		return strings.ToValidUTF8(string(b), "?"), nil, nil
+		if len(b) > 2<<20 {
+			return "", nil, nil, errors.New("текст слишком велик")
+		}
+		return strings.ToValidUTF8(string(b), "?"), nil, nil, nil
 	}
-	return "", nil, errors.New("для импорта в текст поддерживаются DOCX, MD и TXT; PDF и презентации прикрепляйте как файлы")
+	return "", nil, nil, errors.New("для импорта в текст поддерживаются DOCX, MD и TXT; PDF и презентации прикрепляйте как файлы")
 }
 
 var mimeTypes = map[string]string{
 	"pdf": "application/pdf", "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "gif": "image/gif", "webp": "image/webp",
 	"mp4": "video/mp4", "webm": "video/webm", "mp3": "audio/mpeg", "ogg": "audio/ogg", "html": "text/html; charset=utf-8",
+}
+
+func (a *App) visibleFile(m *FileMeta) bool {
+	referencesFile := func(it *Item) bool {
+		if it.CourseID != m.CourseID || !it.Visible {
+			return false
+		}
+		return contains(it.FileIDs, m.ID) || strings.Contains(it.Body, "/files/"+m.ID)
+	}
+	if m.ItemID != "" {
+		it, ok := a.Items.Get(m.ItemID)
+		return ok && referencesFile(&it)
+	}
+	// Ранее принадлежность вложения определялась по материалу и его разметке.
+	_, ok := a.Items.First(func(it *Item) bool {
+		return it.CourseID == m.CourseID && it.Visible &&
+			(contains(it.FileIDs, m.ID) || strings.Contains(it.Body, "](/files/"+m.ID+")"))
+	})
+	return ok
 }
 
 func (c *Ctx) fileServe() {
@@ -826,13 +913,20 @@ func (c *Ctx) fileServe() {
 	}
 	allowed := false
 	switch m.Scope {
-	case "course", "sub":
+	case "course":
 		if co, ok := c.Courses.Get(m.CourseID); ok {
-			allowed = c.canManage(&co) || (m.Scope == "course" && c.canView(&co))
+			allowed = c.canManage(&co) || (c.canView(&co) && c.visibleFile(&m))
 		}
-		allowed = allowed || m.OwnerID == c.User.ID
+	case "sub":
+		if co, ok := c.Courses.Get(m.CourseID); ok {
+			allowed = c.canManage(&co) || (m.OwnerID == c.User.ID && c.canView(&co))
+		}
 	case "pf":
-		allowed = m.OwnerID == c.User.ID || c.User.Role != RoleStudent
+		if m.OwnerID == c.User.ID {
+			allowed = true
+		} else if owner, ok := c.Users.Get(m.OwnerID); ok {
+			allowed = c.canViewPortfolio(&owner)
+		}
 	}
 	if !allowed {
 		c.Deny()
@@ -855,7 +949,7 @@ func (c *Ctx) fileServe() {
 	}
 	h.Set("Content-Type", ct)
 	h.Set("Content-Disposition", disp+"; filename*=UTF-8''"+url.PathEscape(m.Name))
-	h.Set("Cache-Control", "private, max-age=300")
+	h.Set("Cache-Control", "no-store")
 	if m.Ext == "html" {
 		// загруженный HTML изолируется: без сценариев, без доступа к сеансу и к сети
 		h.Set("Content-Security-Policy", "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'")

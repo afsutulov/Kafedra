@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -62,4 +63,37 @@ func TestPersistenceAndRecovery(t *testing.T) {
 	if g2.Tags[0] != "x" {
 		t.Fatal("нарушена изоляция копий")
 	}
+}
+
+func TestCorruptJournalRecordDoesNotDiscardValidSuffix(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ := Register[doc](db, "docs")
+	for _, id := range []string{"a", "b", "c"} {
+		if err := c.Put(id, doc{Name: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Release()
+	p := filepath.Join(dir, "journal.jsonl")
+	data, _ := os.ReadFile(p)
+	data[bytes.IndexByte(data, '\n')+1] = '!'
+	if err := os.WriteFile(p, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if reopened, err := Open(dir); err == nil {
+		reopened.Release()
+		t.Fatal("corrupted journal accepted")
+	}
+	if after, err := os.ReadFile(p); err != nil || !bytes.Equal(data, after) {
+		t.Fatalf("journal changed: %v", err)
+	}
+	lock, err := LockDir(dir)
+	if err != nil {
+		t.Fatalf("failed Open leaked lock: %v", err)
+	}
+	lock.Close()
 }

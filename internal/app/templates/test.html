@@ -16,7 +16,7 @@
 </dl></div>
 
 {{if not .Manage}}
-  {{if .HasBest}}<p>Ваш лучший результат: <strong>{{num .Best}} из {{num .Item.MaxPoints}}</strong></p>{{end}}
+  {{if .HasBest}}<p>Ваш лучший результат: <strong>{{num .Best}} из {{num .BestMax}}</strong></p>{{end}}
   {{if .Active}}
     <div class="alert alert-info">У вас есть незавершённая попытка.</div>
     <a class="primary-btn link-btn" href="/attempts/{{.Active.ID}}">Продолжить тест</a>

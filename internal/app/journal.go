@@ -240,7 +240,7 @@ func (c *Ctx) gradesSave() {
 		return
 	}
 	cols := c.Columns.Find(func(x *Column) bool { return x.CourseID == co.ID })
-	changed := 0
+	changed, failed := 0, 0
 	var bad []string
 	for _, u := range c.students(co, c.F("group")) {
 		for _, col := range cols {
@@ -253,8 +253,11 @@ func (c *Ctx) gradesSave() {
 			raw := c.F(key)
 			if raw == "" {
 				if had {
-					c.Grades.Delete(id)
-					changed++
+					if err := c.Grades.Delete(id); err != nil {
+						failed++
+					} else {
+						changed++
+					}
 				}
 				continue
 			}
@@ -264,15 +267,21 @@ func (c *Ctx) gradesSave() {
 				continue
 			}
 			if !had || old.Points != v {
-				c.Grades.Put(id, Grade{ID: id, ColumnID: col.ID, CourseID: co.ID, UserID: u.ID, Points: v, By: c.User.ID, At: time.Now()})
+				if err := c.Grades.Put(id, Grade{ID: id, ColumnID: col.ID, CourseID: co.ID, UserID: u.ID, Points: v, By: c.User.ID, At: time.Now()}); err != nil {
+					failed++
+					continue
+				}
 				changed++
 				c.notify(u.ID, fmt.Sprintf("%s: «%s» — %s из %s.", co.Title, col.Title, fmtNum(v), fmtNum(col.MaxPoints)), "/grades")
 			}
 		}
 	}
-	c.Log("изменение оценок в журнале", co.Title, true, fmt.Sprintf("изменено значений: %d", changed))
+	c.Log("изменение оценок в журнале", co.Title, failed == 0 && len(bad) == 0,
+		fmt.Sprintf("изменено значений: %d, ошибок записи: %d, вне диапазона: %d", changed, failed, len(bad)))
 	msg := fmt.Sprintf("Журнал сохранён, изменено значений: %d.", changed)
-	if len(bad) > 0 {
+	if failed > 0 {
+		msg = fmt.Sprintf("!Изменено значений: %d. Не удалось записать: %d. Проверьте журнал и повторите ввод.", changed, failed)
+	} else if len(bad) > 0 {
 		msg = "!Часть значений не принята (вне диапазона): " + strings.Join(bad, "; ")
 	}
 	c.Redirect(c.Back("/courses/"+co.ID+"/journal"), msg)
@@ -590,6 +599,23 @@ type pfWork struct {
 	At     time.Time
 }
 
+func (c *Ctx) canViewPortfolio(owner *User) bool {
+	if owner.Role != RoleStudent {
+		return false
+	}
+	if c.User.ID == owner.ID || c.User.Role == RoleAdmin {
+		return true
+	}
+	if c.User.Role == RoleTeacher {
+		for _, co := range c.coursesOf(c.User) {
+			if contains(co.GroupIDs, owner.GroupID) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (c *Ctx) portfolio() {
 	owner := *c.User
 	if c.User.Role != RoleStudent {
@@ -598,15 +624,9 @@ func (c *Ctx) portfolio() {
 			c.Redirect("/", "!Портфолио открывается из списка участников курса.")
 			return
 		}
-		if c.User.Role == RoleTeacher { // преподаватель видит портфолио только своих учащихся
-			teaches := false
-			for _, co := range c.coursesOf(c.User) {
-				teaches = teaches || contains(co.GroupIDs, u.GroupID)
-			}
-			if !teaches {
-				c.Deny()
-				return
-			}
+		if !c.canViewPortfolio(&u) {
+			c.Deny()
+			return
 		}
 		owner = u
 		c.Log("просмотр портфолио", u.Login, true, "")
@@ -639,14 +659,18 @@ func (c *Ctx) portfolioAdd() {
 	}
 	e := PortfolioEntry{ID: secure.NewID(), UserID: c.User.ID, Title: title, Description: c.F("description"), Created: time.Now()}
 	if c.R.MultipartForm != nil && len(c.R.MultipartForm.File["file"]) > 0 {
-		m, err := c.saveUpload(c.R.MultipartForm.File["file"][0], "", "pf")
+		m, err := c.saveUpload(c.R.MultipartForm.File["file"][0], "", "pf", "")
 		if err != nil {
 			c.Redirect("/portfolio", "!Файл не принят: "+err.Error()+".")
 			return
 		}
 		e.FileID = m.ID
 	}
-	c.Portfolio.Put(e.ID, e)
+	if err := c.Portfolio.Put(e.ID, e); err != nil {
+		c.removeFile(e.FileID)
+		c.Fail(http.StatusServiceUnavailable, "Не удалось сохранить запись портфолио.")
+		return
+	}
 	c.Redirect("/portfolio", "Запись добавлена.")
 }
 
@@ -656,8 +680,11 @@ func (c *Ctx) portfolioDelete() {
 		c.Deny()
 		return
 	}
+	if err := c.Portfolio.Delete(e.ID); err != nil {
+		c.Fail(http.StatusServiceUnavailable, "Не удалось удалить запись портфолио.")
+		return
+	}
 	c.removeFile(e.FileID)
-	c.Portfolio.Delete(e.ID)
 	c.Redirect("/portfolio", "Запись удалена.")
 }
 

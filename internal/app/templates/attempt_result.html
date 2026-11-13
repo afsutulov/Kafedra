@@ -4,7 +4,7 @@
 <h2>Результат теста{{if .Manage}}: {{.Student}}{{end}}</h2>
 <div class="glass-subcard"><dl class="kv">
   <dt>Набрано</dt><dd><strong>{{num .At.Score}} из {{num .At.MaxScore}}</strong> ({{pct .At.Score .At.MaxScore}}%) {{if .Passed}}<span class="tag ok">зачтено</span>{{else}}<span class="tag warn">не зачтено</span>{{end}}</dd>
-  <dt>Баллов в журнал</dt><dd>{{num .At.Points}} из {{num .Item.MaxPoints}}</dd>
+  <dt>Баллов в журнал</dt><dd>{{num .At.Points}} из {{num .Grading.MaxPoints}}</dd>
   <dt>Начало — завершение</dt><dd>{{dt .At.Started}} — {{dt .At.Finished}}</dd>
   {{if .Manage}}<dt>Адрес</dt><dd>{{.At.IP}}</dd>{{end}}
 </dl></div>
@@ -12,7 +12,7 @@
 <h3>Разбор ответов</h3>
 {{range $i, $r := .Review}}
 <div class="question">
-  <div class="post-head"><span class="muted">Вопрос {{add $i 1}}</span>{{if $r.Correct}}<span class="tag ok">{{num $r.Got}} из {{num $r.Q.Points}}</span>{{else}}<span class="tag warn">{{num $r.Got}} из {{num $r.Q.Points}}</span>{{end}}</div>
+  <div class="post-head"><span class="muted">Вопрос {{add $i 1}}</span>{{if $r.Correct}}<span class="tag ok">верно</span>{{else if $r.Got}}<span class="tag">частично верно</span>{{else}}<span class="tag warn">неверно</span>{{end}}</div>
   <div class="qtext">{{$r.Q.Text}}</div>
   {{if eq $r.Q.Type "text"}}
     <div class="opt {{if $r.Correct}}right{{else}}wrong{{end}}">Ответ: {{if $r.A.Text}}{{$r.A.Text}}{{else}}(нет ответа){{end}}</div>

@@ -17,20 +17,23 @@ const (
 
 // Config — файл конфигурации config.json: все основные настройки экземпляра.
 type Config struct {
-	Listen       string `json:"listen"`        // адрес и порт
-	DataDir      string `json:"data_dir"`      // каталог данных
-	LogFile      string `json:"log_file"`      // файл журнала работы службы ("-" — только стандартный вывод)
-	AuditDir     string `json:"audit_dir"`     // каталог журнала событий безопасности (пусто — <data_dir>/audit)
-	TLSCert      string `json:"tls_cert"`      // сертификат TLS (пусто — работа по HTTP за внешним веб-сервером)
-	TLSKey       string `json:"tls_key"`       // ключ TLS
-	ExternalURL  string `json:"external_url"`  // адрес, по которому портал открывают пользователи, например https://lms.example.ru
-	TrustedProxy string `json:"trusted_proxy"` // IP внешнего веб-сервера (прокси); несколько — через запятую
-	Timezone     string `json:"timezone"`      // часовой пояс
-	PortalName   string `json:"portal_name"`   // первая строка заголовка: название портала
-	OrgName      string `json:"org_name"`      // вторая строка заголовка: название организации
-	LogoFile     string `json:"logo_file"`     // файл логотипа (PNG, SVG, JPEG, WebP); пусто — встроенный
-	BackupHour   int    `json:"backup_hour"`   // час ежесуточного резервного копирования (-1 — отключено)
-	BackupKeep   int    `json:"backup_keep"`   // сколько последних копий хранить
+	Listen                      string `json:"listen"`        // адрес и порт
+	DataDir                     string `json:"data_dir"`      // каталог данных
+	LogFile                     string `json:"log_file"`      // файл журнала работы службы ("-" — только стандартный вывод)
+	AuditDir                    string `json:"audit_dir"`     // каталог журнала событий безопасности (пусто — <data_dir>/audit)
+	TLSCert                     string `json:"tls_cert"`      // сертификат TLS (пусто — работа по HTTP за внешним веб-сервером)
+	TLSKey                      string `json:"tls_key"`       // ключ TLS
+	ExternalURL                 string `json:"external_url"`  // адрес, по которому портал открывают пользователи, например https://lms.example.ru
+	TrustedProxy                string `json:"trusted_proxy"` // IP внешнего веб-сервера (прокси); несколько — через запятую
+	Timezone                    string `json:"timezone"`      // часовой пояс
+	PortalName                  string `json:"portal_name"`   // первая строка заголовка: название портала
+	OrgName                     string `json:"org_name"`      // вторая строка заголовка: название организации
+	LogoFile                    string `json:"logo_file"`     // файл логотипа (PNG, SVG, JPEG, WebP); пусто — встроенный
+	PersonalDataOperatorAddress string `json:"personal_data_operator_address,omitempty"`
+	CertificateIcon             string `json:"certificate_icon"` // значок на сертификате (PNG или JPEG); пусто — логотип портала либо встроенный
+	CertificateFont             string `json:"certificate_font"` // шрифт TrueType для сертификатов; пусто — поиск в системе
+	BackupHour                  int    `json:"backup_hour"`      // час ежесуточного резервного копирования (-1 — отключено)
+	BackupKeep                  int    `json:"backup_keep"`      // сколько последних копий хранить
 
 	Settings Settings `json:"settings"` // безопасность, учебный процесс, файлы (изменяются и из веб-интерфейса)
 

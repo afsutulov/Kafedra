@@ -3,6 +3,7 @@ package content
 import (
 	"archive/zip"
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 )
@@ -116,4 +117,91 @@ func FuzzImportDOCX(f *testing.F) {
 		data := buildDocx(t, map[string]string{"word/document.xml": doc})
 		ImportDOCX(bytes.NewReader(data), int64(len(data)), nil)
 	})
+}
+
+func TestOversizedTableFallsBackToEscapedText(t *testing.T) {
+	src := strings.Repeat("|", 2400) + "\n|---|\n" + strings.Repeat("|\n", 1200) + "|<script>|\n\nСледующий абзац"
+	got := Render(src)
+	if len(got) > 2*len(src) || strings.Contains(got, "<script>") || !strings.Contains(got, "<p>Следующий абзац</p>") {
+		t.Fatalf("unexpected rendering (%d bytes)", len(got))
+	}
+}
+
+func TestXLSXRoundTrip(t *testing.T) {
+	var buf bytes.Buffer
+	err := WriteXLSX(&buf, Sheet{Name: "Группа", HeaderRows: 1, Widths: []float64{30, 12},
+		Rows: [][]any{{"ФИО", "Баллы"}, {"Иванов <Пётр> & Ко", 4.5}, {nil, 7}, {"=1+1", nil}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := ReadXLSX(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 4 || rows[1][0] != "Иванов <Пётр> & Ко" || rows[1][1] != "4.5" || rows[2][0] != "" || rows[2][1] != "7" || rows[3][0] != "=1+1" {
+		t.Fatalf("прочитано: %q", rows)
+	}
+	// книга, сохранённая табличным редактором: общие строки, произвольное имя файла листа
+	data := buildDocx(t, map[string]string{
+		"xl/workbook.xml":            `<workbook xmlns:r="r"><sheets><sheet name="Данные" sheetId="5" r:id="rId7"/></sheets></workbook>`,
+		"xl/_rels/workbook.xml.rels": `<Relationships><Relationship Id="rId7" Target="worksheets/sheet5.xml"/></Relationships>`,
+		"xl/sharedStrings.xml":       `<sst><si><t>Вопрос</t></si><si><r><t>Сос</t></r><r><t>тавной</t></r></si></sst>`,
+		"xl/worksheets/sheet5.xml":   `<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="C1" t="s"><v>1</v></c></row><row r="3"><c r="B3"><v>0.30000000000000004</v></c></row></sheetData></worksheet>`,
+	})
+	rows, err = ReadXLSX(bytes.NewReader(data), int64(len(data)))
+	if err != nil || len(rows) != 3 || rows[0][0] != "Вопрос" || rows[0][2] != "Составной" || rows[2][1] != "0.3" {
+		t.Fatalf("err=%v rows=%q", err, rows)
+	}
+}
+
+func FuzzReadXLSX(f *testing.F) {
+	f.Add(`<worksheet><sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData></worksheet>`)
+	f.Fuzz(func(t *testing.T, sheet string) {
+		data := buildDocx(t, map[string]string{"xl/worksheets/sheet1.xml": sheet})
+		ReadXLSX(bytes.NewReader(data), int64(len(data)))
+	})
+}
+
+func TestWriteDOCXIsReadable(t *testing.T) {
+	var buf bytes.Buffer
+	if err := WriteDOCX(&buf, []Para{{Text: "АНКЕТА", Bold: true, Align: "center", Size: 14}, {Text: "ФИО: <Иванов> & сын"}}); err != nil {
+		t.Fatal(err)
+	}
+	md, _, err := ImportDOCX(bytes.NewReader(buf.Bytes()), int64(buf.Len()), nil)
+	if err != nil || !strings.Contains(md, "АНКЕТА") || !strings.Contains(md, "<Иванов> & сын") {
+		t.Fatalf("err=%v md=%q", err, md)
+	}
+}
+
+func TestPDFWithSystemFont(t *testing.T) {
+	var font []byte
+	for _, p := range []string{"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"} {
+		if b, err := os.ReadFile(p); err == nil {
+			font = b
+			break
+		}
+	}
+	if font == nil {
+		t.Skip("в системе нет шрифта TrueType для проверки")
+	}
+	p, err := NewPDF(842, 595, font)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Text(421, 300, 24, "Сертификат № 1 — «Курс»", 0, Hex(0x202834), true)
+	if w := p.TextWidth("Привет", 12); w < 20 || w > 60 {
+		t.Fatalf("ширина строки %v", w)
+	}
+	out := p.Bytes("Сертификат")
+	if !bytes.HasPrefix(out, []byte("%PDF-1.5")) || !bytes.Contains(out, []byte("/FontFile2")) || !bytes.HasSuffix(out, []byte("%%EOF\n")) {
+		t.Fatal("некорректная структура PDF")
+	}
+	if _, err := NewPDF(1, 1, []byte("не шрифт")); err == nil {
+		t.Fatal("мусор принят за шрифт")
+	}
+}
+
+func FuzzParseTTF(f *testing.F) {
+	f.Add([]byte("\x00\x01\x00\x00\x00\x01"))
+	f.Fuzz(func(t *testing.T, data []byte) { parseTTF(data) })
 }

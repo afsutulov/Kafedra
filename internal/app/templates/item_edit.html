@@ -114,6 +114,13 @@
   <div class="row"><button class="primary-btn" type="submit">Сохранить вопрос</button>{{if .EditQ}}<a class="ghost-btn link-btn" href="/items/{{.Item.ID}}/edit#questions">Отмена</a>{{end}}</div>
 </form></details>
 
+<details><summary>Загрузить вопросы из Excel</summary>
+<form method="post" action="/items/{{.Item.ID}}/questions/xlsx" enctype="multipart/form-data" class="stack-form">{{template "csrf" .}}
+  <p>1. <a href="/templates/test.xlsx">Скачайте шаблон (.xlsx)</a> и заполните его: один вопрос — одна строка. Правила заполнения — на втором листе шаблона.<br>2. Загрузите заполненный файл — вопросы добавятся к уже имеющимся.</p>
+  <label>Заполненный шаблон<input type="file" name="file" accept=".xlsx" required></label>
+  <div class="row"><button class="soft-btn" type="submit">Загрузить вопросы</button></div>
+</form></details>
+
 <details><summary>Быстрый ввод: несколько вопросов текстом</summary>
 <form method="post" action="/items/{{.Item.ID}}/questions/import" class="stack-form">{{template "csrf" .}}
   <textarea name="bulk" rows="12" class="code" placeholder="? Какой протокол работает на транспортном уровне?&#10;+ TCP&#10;- HTTP&#10;- IP&#10;&#10;? Отметьте компилируемые языки&#10;+ Go&#10;+ C++&#10;- Python&#10;* 2&#10;&#10;? Сколько бит в байте?&#10;= 8&#10;= восемь"></textarea>

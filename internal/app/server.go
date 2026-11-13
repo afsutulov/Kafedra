@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
@@ -36,24 +37,32 @@ type App struct {
 	Audit   *secure.Audit
 	Loc     *time.Location
 
-	Users     *store.Coll[User]
-	Groups    *store.Coll[Group]
-	Courses   *store.Coll[Course]
-	Items     *store.Coll[Item]
-	Attempts  *store.Coll[Attempt]
-	Subs      *store.Coll[Submission]
-	Columns   *store.Coll[Column]
-	Grades    *store.Coll[Grade]
-	Events    *store.Coll[Event]
-	Attend    *store.Coll[Attendance]
-	NewsC     *store.Coll[News]
-	Posts     *store.Coll[Post]
-	Portfolio *store.Coll[PortfolioEntry]
-	Progress  *store.Coll[Progress]
-	Notices   *store.Coll[Notice]
-	Sessions  *store.Coll[Session]
-	Files     *store.Coll[FileMeta]
-	setMu     sync.RWMutex
+	Users               *store.Coll[User]
+	Groups              *store.Coll[Group]
+	Courses             *store.Coll[Course]
+	Items               *store.Coll[Item]
+	Attempts            *store.Coll[Attempt]
+	Subs                *store.Coll[Submission]
+	Columns             *store.Coll[Column]
+	Grades              *store.Coll[Grade]
+	Events              *store.Coll[Event]
+	Attend              *store.Coll[Attendance]
+	NewsC               *store.Coll[News]
+	Posts               *store.Coll[Post]
+	Portfolio           *store.Coll[PortfolioEntry]
+	Certs               *store.Coll[Certificate]
+	Progress            *store.Coll[Progress]
+	Notices             *store.Coll[Notice]
+	Sessions            *store.Coll[Session]
+	Files               *store.Coll[FileMeta]
+	setMu               sync.RWMutex
+	importSlot          chan struct{}
+	attemptQueueMu      sync.Mutex
+	attemptQueue        map[string]int
+	fileMu              sync.Mutex
+	backupReaders       int
+	pendingFileRemovals []string
+	writeMu             sync.Mutex // защищает составные изменения и снимки для резервного копирования
 
 	tpl     map[string]*template.Template
 	started time.Time
@@ -90,6 +99,31 @@ func New(cfg Config, version string) (a *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("часовой пояс %q: %w", cfg.Timezone, err)
 	}
+	dbDir := filepath.Join(cfg.DataPath(), "db")
+	lock, err := store.LockDir(dbDir)
+	if err != nil {
+		return nil, err
+	}
+	var db *store.DB
+	var audit *secure.Audit
+	ready := false
+	defer func() {
+		if !ready {
+			if audit != nil {
+				audit.Close()
+			}
+			if db != nil {
+				db.Release()
+			} else {
+				lock.Close()
+			}
+		}
+	}()
+	if _, err := os.Stat(filepath.Join(dbDir, restoreMarker)); err == nil {
+		return nil, errors.New("обнаружено незавершённое восстановление: повторите команду restore с проверенной копией")
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
 	for _, d := range []string{cfg.DataPath(), filepath.Join(cfg.DataPath(), "files"), filepath.Join(cfg.DataPath(), "backup")} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return nil, err
@@ -99,32 +133,16 @@ func New(cfg Config, version string) (a *App, err error) {
 	if err != nil {
 		return nil, err
 	}
-	db, err := store.Open(filepath.Join(cfg.DataPath(), "db"))
+	db, err = store.OpenLocked(dbDir, lock)
 	if err != nil {
 		return nil, err
 	}
-	audit, err := secure.OpenAudit(cfg.AuditPath())
+	audit, err = secure.OpenAudit(cfg.AuditPath())
 	if err != nil {
 		return nil, err
 	}
-	a = &App{Cfg: cfg, Version: version, DB: db, Keys: keys, Audit: audit, Loc: loc, started: time.Now(), lim: map[string][]time.Time{}}
-	a.Users = must(store.Register[User](db, "users"))
-	a.Groups = must(store.Register[Group](db, "groups"))
-	a.Courses = must(store.Register[Course](db, "courses"))
-	a.Items = must(store.Register[Item](db, "items"))
-	a.Attempts = must(store.Register[Attempt](db, "attempts"))
-	a.Subs = must(store.Register[Submission](db, "submissions"))
-	a.Columns = must(store.Register[Column](db, "columns"))
-	a.Grades = must(store.Register[Grade](db, "grades"))
-	a.Events = must(store.Register[Event](db, "events"))
-	a.Attend = must(store.Register[Attendance](db, "attendance"))
-	a.NewsC = must(store.Register[News](db, "news"))
-	a.Posts = must(store.Register[Post](db, "posts"))
-	a.Portfolio = must(store.Register[PortfolioEntry](db, "portfolio"))
-	a.Progress = must(store.Register[Progress](db, "progress"))
-	a.Notices = must(store.Register[Notice](db, "notices"))
-	a.Sessions = must(store.Register[Session](db, "sessions"))
-	a.Files = must(store.Register[FileMeta](db, "files"))
+	a = &App{Cfg: cfg, Version: version, DB: db, Keys: keys, Audit: audit, Loc: loc, started: time.Now(), lim: map[string][]time.Time{}, importSlot: make(chan struct{}, 1), attemptQueue: map[string]int{}}
+	a.registerCollections(db)
 	for _, w := range db.Warnings {
 		a.Audit.Log(secure.AuditRecord{Event: "хранилище: восстановление после сбоя", Detail: w, OK: true})
 	}
@@ -139,13 +157,35 @@ func New(cfg Config, version string) (a *App, err error) {
 	if err := a.loadTemplates(); err != nil {
 		return nil, err
 	}
+	ready = true
 	return a, nil
 }
 
+func (a *App) registerCollections(db *store.DB) {
+	a.Users = must(store.Register[User](db, "users"))
+	a.Groups = must(store.Register[Group](db, "groups"))
+	a.Courses = must(store.Register[Course](db, "courses"))
+	a.Items = must(store.Register[Item](db, "items"))
+	a.Attempts = must(store.Register[Attempt](db, "attempts"))
+	a.Subs = must(store.Register[Submission](db, "submissions"))
+	a.Columns = must(store.Register[Column](db, "columns"))
+	a.Grades = must(store.Register[Grade](db, "grades"))
+	a.Events = must(store.Register[Event](db, "events"))
+	a.Attend = must(store.Register[Attendance](db, "attendance"))
+	a.NewsC = must(store.Register[News](db, "news"))
+	a.Posts = must(store.Register[Post](db, "posts"))
+	a.Portfolio = must(store.Register[PortfolioEntry](db, "portfolio"))
+	a.Certs = must(store.Register[Certificate](db, "certificates"))
+	a.Progress = must(store.Register[Progress](db, "progress"))
+	a.Notices = must(store.Register[Notice](db, "notices"))
+	a.Sessions = must(store.Register[Session](db, "sessions"))
+	a.Files = must(store.Register[FileMeta](db, "files"))
+}
+
 // Close корректно завершает работу с хранилищем.
-func (a *App) Close() {
-	a.DB.Close()
+func (a *App) Close() error {
 	a.Audit.Close()
+	return a.DB.Close()
 }
 
 // S возвращает текущие настройки (раздел settings файла конфигурации).
@@ -301,6 +341,9 @@ type Ctx struct {
 	User *User
 	Sess *Session
 	IP   string
+	// Arrived — момент получения формы целиком (до ожидания блокировки записи): по нему
+	// определяется, успел ли учащийся отправить ответы до истечения времени.
+	Arrived time.Time
 }
 
 type navItem struct{ URL, Title string }
@@ -483,7 +526,6 @@ func (a *App) wrap(roles string, big bool, h handler) http.HandlerFunc {
 			limit = int64(a.S().MaxUploadMB)<<20 + 1<<20
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, limit)
-		c.loadSession()
 		if r.Method == http.MethodPost {
 			if !a.sameOrigin(r) {
 				c.Log("отклонён межсайтовый запрос", r.URL.Path, false, r.Header.Get("Origin"))
@@ -499,6 +541,30 @@ func (a *App) wrap(roles string, big bool, h handler) http.HandlerFunc {
 				http.Error(w, "Некорректный запрос", http.StatusBadRequest)
 				return
 			}
+		}
+		if r.Pattern == "POST /attempts/{id}/submit" || r.Pattern == "POST /attempts/{id}/save" {
+			id := r.PathValue("id")
+			a.attemptQueueMu.Lock()
+			c.Arrived = time.Now()
+			a.attemptQueue[id]++
+			a.attemptQueueMu.Unlock()
+			defer func() {
+				a.attemptQueueMu.Lock()
+				a.attemptQueue[id]--
+				if a.attemptQueue[id] == 0 {
+					delete(a.attemptQueue, id)
+				}
+				a.attemptQueueMu.Unlock()
+			}()
+		} else {
+			c.Arrived = time.Now()
+		}
+		if r.Method == http.MethodPost && !selfLocking[r.Pattern] {
+			a.writeMu.Lock()
+			defer a.writeMu.Unlock()
+		}
+		c.loadSession()
+		if r.Method == http.MethodPost {
 			if c.Sess != nil && !secure.Equal(r.FormValue("csrf"), c.Sess.CSRF) {
 				c.Log("неверный CSRF-токен", r.URL.Path, false, "")
 				http.Error(w, "Сеанс устарел. Обновите страницу и повторите действие.", http.StatusForbidden)
@@ -515,24 +581,46 @@ func (a *App) wrap(roles string, big bool, h handler) http.HandlerFunc {
 		}
 		// обязательные шаги перед началом работы
 		p := r.URL.Path
-		free := p == "/logout" || strings.HasPrefix(p, "/static/")
+		free := p == "/logout" || strings.HasPrefix(p, "/static/") // бланки доступны уже при первом входе
 		switch {
-		case !c.Sess.MFA && !free && p != "/mfa":
+		case c.needsMFACode() && !free && p != "/mfa":
 			http.Redirect(w, r, "/mfa", http.StatusSeeOther)
 			return
-		case c.Sess.MFA && (c.User.MustChange || c.User.Consent.IsZero() || c.passwordExpired()) && !free && p != "/password":
+		case !c.needsMFACode() && (c.User.MustChange || c.User.Consent.IsZero() || c.passwordExpired()) && !free && p != "/password" && p != "/docs/anketa.docx" && p != "/docs/soglasie.docx":
 			http.Redirect(w, r, "/password", http.StatusSeeOther)
 			return
-		case c.Sess.MFA && !c.User.MustChange && c.mfaRequired() && !c.User.TOTPEnabled && !free && p != "/password" && !strings.HasPrefix(p, "/profile"):
+		case !c.User.MustChange && c.mfaRequired() && !c.User.TOTPEnabled && !free && p != "/password" && !strings.HasPrefix(p, "/profile"):
 			c.Redirect("/profile", "!Для вашей роли обязательна двухфакторная аутентификация. Подключите её, чтобы продолжить работу.")
 			return
 		}
-		if roles != authed && !strings.Contains(roles, c.User.Role) {
+		if roles != authed && !contains(strings.Split(roles, ","), c.User.Role) {
 			c.Deny()
 			return
 		}
 		h(c)
 	}
+}
+
+// selfLocking — обработчики, которые сами берут блокировку записи на короткое время:
+// длительную работу (хеширование паролей, копирование файлов) они выполняют вне её,
+// чтобы не задерживать сдачу тестов и работ другими пользователями.
+var selfLocking = map[string]bool{
+	"POST /login":                        true,
+	"POST /admin/backup":                 true,
+	"POST /admin/users/import":           true,
+	"POST /courses/{id}/students/import": true,
+	"POST /items/{id}/questions/xlsx":    true,
+	"POST /courses/{id}/certificate":     true,
+}
+
+// recheck повторно проверяет сеанс и права под блокировкой записи (для selfLocking-обработчиков).
+// Вызывать при захваченной writeMu.
+func (c *Ctx) recheck(roles string) bool {
+	c.User, c.Sess = nil, nil
+	c.loadSession()
+	return c.User != nil && contains(strings.Split(roles, ","), c.User.Role) && !c.needsMFACode() &&
+		(!c.mfaRequired() || c.User.TOTPEnabled) && !c.User.MustChange &&
+		!c.User.Consent.IsZero() && !c.passwordExpired() && secure.Equal(c.F("csrf"), c.Sess.CSRF)
 }
 
 // sameOrigin проверяет, что запрос отправлен со страницы самого портала. За внешним веб-сервером
@@ -603,6 +691,16 @@ func (a *App) Handler() http.Handler {
 	po("/posts/{id}/delete", authed, (*Ctx).postDelete)
 	g("/courses/{id}/journal", staff, (*Ctx).journal)
 	g("/courses/{id}/journal.csv", staff, (*Ctx).journalCSV)
+	g("/courses/{id}/journal.xlsx", staff, (*Ctx).journalXLSX)
+	g("/templates/students.xlsx", staff, (*Ctx).templateStudents)
+	g("/templates/test.xlsx", staff, (*Ctx).templateTest)
+	up("/courses/{id}/students/import", staff, (*Ctx).studentsImport)
+	up("/items/{id}/questions/xlsx", staff, (*Ctx).questionImportXLSX)
+	g("/docs/anketa.docx", authed, (*Ctx).docAnketa)
+	g("/docs/soglasie.docx", authed, (*Ctx).docSoglasie)
+	g("/courses/{id}/zayavlenie.docx", RoleStudent, (*Ctx).docZayavlenie)
+	po("/courses/{id}/certificate", RoleStudent, (*Ctx).certificateIssue)
+	g("/certificates/{id}", authed, (*Ctx).certificateGet)
 	po("/courses/{id}/columns", staff, (*Ctx).columnCreate)
 	po("/columns/{id}/delete", staff, (*Ctx).columnDelete)
 	po("/courses/{id}/grades", staff, (*Ctx).gradesSave)
@@ -698,6 +796,7 @@ func (a *App) Janitor(stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-t.C:
+			a.writeMu.Lock()
 			s := a.S()
 			now := time.Now()
 			for _, ss := range a.Sessions.All() {
@@ -706,17 +805,24 @@ func (a *App) Janitor(stop <-chan struct{}) {
 				}
 			}
 			for _, at := range a.Attempts.Find(func(x *Attempt) bool {
-				return !x.Done && !x.Deadline.IsZero() && now.After(x.Deadline.Add(time.Minute))
+				return !x.Done && !x.Deadline.IsZero() && !now.Before(x.Deadline.Add(attemptSubmitGrace))
 			}) {
-				a.finishAttempt(at.ID)
+				if err := a.finishExpiredAttempt(at.ID, now); err != nil {
+					log.Printf("не удалось завершить попытку %s: %v", at.ID, err)
+				}
 			}
 			if n++; n%60 == 0 { // раз в час журнал операций сворачивается в читаемый snapshot.json
-				a.DB.Compact()
+				if err := a.DB.Compact(); err != nil {
+					log.Printf("не удалось свернуть журнал хранилища: %v", err)
+				}
 			}
+			a.writeMu.Unlock()
 			if lt := now.In(a.Loc); a.Cfg.BackupHour >= 0 && lt.Hour() == a.Cfg.BackupHour {
 				name := filepath.Join(a.Cfg.DataPath(), "backup", "kafedra-"+lt.Format("20060102")+".zip")
 				if _, err := os.Stat(name); os.IsNotExist(err) {
-					a.BackupToFile(name)
+					if err := a.BackupToFile(name); err != nil {
+						log.Printf("автоматическое резервное копирование: %v", err)
+					}
 				}
 			}
 		}
@@ -737,24 +843,32 @@ func toF(v any) float64 {
 
 // BackupToFile создаёт резервную копию в файле и удаляет устаревшие автоматические копии.
 func (a *App) BackupToFile(name string) error {
-	tmp := name + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	dir := filepath.Dir(name)
+	f, err := os.CreateTemp(dir, ".kafedra-backup-*")
+	incomplete := false
 	if err == nil {
-		err = a.Backup(f, false)
-		if e := f.Close(); err == nil {
-			err = e
+		tmp := f.Name()
+		defer os.Remove(tmp)
+		incomplete, err = a.backup(f, false)
+		if err == nil {
+			err = f.Sync()
+		}
+		err = errors.Join(err, f.Close())
+		if err == nil {
+			err = os.Rename(tmp, name)
+		}
+		if err == nil {
+			err = store.SyncDir(dir)
 		}
 	}
-	if err == nil {
-		err = os.Rename(tmp, name)
-	}
-	rec := secure.AuditRecord{Event: "резервное копирование", Object: filepath.Base(name), OK: err == nil}
+	rec := secure.AuditRecord{Event: "резервное копирование", Object: filepath.Base(name), OK: err == nil && !incomplete}
 	if err != nil {
-		os.Remove(tmp)
 		rec.Detail = err.Error()
+	} else if incomplete {
+		rec.Detail = "копия неполная; ротация предыдущих копий пропущена"
 	}
 	a.Audit.Log(rec)
-	if old, _ := filepath.Glob(filepath.Join(a.Cfg.DataPath(), "backup", "kafedra-*.zip")); a.Cfg.BackupKeep > 0 && len(old) > a.Cfg.BackupKeep {
+	if old, _ := filepath.Glob(filepath.Join(a.Cfg.DataPath(), "backup", "kafedra-*.zip")); err == nil && !incomplete && a.Cfg.BackupKeep > 0 && len(old) > a.Cfg.BackupKeep {
 		sort.Strings(old)
 		for _, o := range old[:len(old)-a.Cfg.BackupKeep] {
 			os.Remove(o)

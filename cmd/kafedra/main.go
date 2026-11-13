@@ -27,12 +27,13 @@ import (
 
 	"kafedra/internal/app"
 	"kafedra/internal/secure"
+	"kafedra/internal/store"
 )
 
-var version = "1.2.1"
+var version = "1.3.1"
 
 const usage = `ПК «Кафедра» — система управления обучением
-© ГБУ ПК «Центр информацинного развития ПК»%.0s
+© ГБУ ПК «Центр информационного развития ПК»%.0s
 
 Использование: kafedra <команда> [параметры]
 
@@ -113,7 +114,7 @@ func open(args []string, fs *flag.FlagSet) (*app.App, error) {
 	return app.New(cfg, version)
 }
 
-func cmdInit(args []string) error {
+func cmdInit(args []string) (result error) {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	cfgPath := fs.String("config", app.DefaultConfigPath, "файл конфигурации")
 	login := fs.String("admin", "admin", "логин администратора")
@@ -162,7 +163,7 @@ func cmdInit(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer a.Close()
+	defer func() { result = errors.Join(result, a.Close()) }()
 	if a.Users.Count(nil) > 0 {
 		return errors.New("система уже инициализирована (для сброса пароля используйте команду passwd)")
 	}
@@ -187,12 +188,12 @@ func cmdInit(args []string) error {
 	return nil
 }
 
-func cmdServe(args []string) error {
+func cmdServe(args []string) (result error) {
 	a, err := open(args, flag.NewFlagSet("serve", flag.ExitOnError))
 	if err != nil {
 		return err
 	}
-	defer a.Close()
+	defer func() { result = errors.Join(result, a.Close()) }()
 	if a.Users.Count(nil) == 0 {
 		return errors.New("система не инициализирована: выполните команду init")
 	}
@@ -210,14 +211,22 @@ func cmdServe(args []string) error {
 	}
 	// события безопасности дублируются в журнал работы службы (файл log_file и стандартный вывод)
 	a.Audit.Echo = func(line []byte) { logw.Write(append([]byte("AUDIT "), line...)) }
-	stop := make(chan struct{})
-	go a.Janitor(stop)
 	useTLS := a.Cfg.UseTLS()
 	if useTLS {
 		if _, err := tls.LoadX509KeyPair(a.Cfg.CertPath(), a.Cfg.KeyPath()); err != nil {
 			return fmt.Errorf("сертификат TLS не загружен: %w (для работы без сертификатов за внешним веб-сервером оставьте tls_cert и tls_key пустыми)", err)
 		}
 	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.Janitor(stop)
+	}()
+	defer func() {
+		close(stop)
+		<-done
+	}()
 	a.Audit.Log(secure.AuditRecord{Event: "запуск системы", OK: true, Detail: fmt.Sprintf("версия %s, sha256 исполняемого файла %s, TLS: %v", version, a.BinSum, useTLS)})
 	errc := make(chan error, 1)
 	go func() {
@@ -235,10 +244,10 @@ func cmdServe(args []string) error {
 	}()
 	sig := make(chan os.Signal, 2)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR1)
+	defer signal.Stop(sig)
 	for {
 		select {
 		case err := <-errc:
-			close(stop)
 			return err
 		case s := <-sig:
 			if s == syscall.SIGUSR1 {
@@ -251,12 +260,11 @@ func cmdServe(args []string) error {
 				continue
 			}
 			log.Printf("получен сигнал %v, завершение работы", s)
-			close(stop)
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			srv.Shutdown(ctx)
-			a.Audit.Log(secure.AuditRecord{Event: "остановка системы", OK: true})
-			return nil
+			err := srv.Shutdown(ctx)
+			a.Audit.Log(secure.AuditRecord{Event: "остановка системы", OK: err == nil})
+			return err
 		}
 	}
 }
@@ -274,19 +282,24 @@ func cmdBackup(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := a.Backup(f, *withKey); err != nil {
-		f.Close()
+	err = a.Backup(f, *withKey)
+	if err == nil {
+		err = f.Sync()
+	}
+	if err := errors.Join(err, f.Close()); err != nil {
+		os.Remove(*out)
 		return err
 	}
 	a.Audit.Log(secure.AuditRecord{Event: "резервное копирование", Object: *out, OK: true, Detail: fmt.Sprintf("командная строка, с ключом: %v", *withKey)})
 	fmt.Println("Резервная копия создана:", *out)
-	return f.Close()
+	return nil
 }
 
 func cmdRestore(args []string) error {
 	fs := flag.NewFlagSet("restore", flag.ExitOnError)
 	cfgPath := fs.String("config", app.DefaultConfigPath, "файл конфигурации")
 	in := fs.String("in", "", "файл резервной копии")
+	allowIncomplete := fs.Bool("allow-incomplete", false, "восстановить без вложений, указанных в копии как повреждённые")
 	fs.Parse(args)
 	if *in == "" {
 		return errors.New("укажите файл: -in копия.zip")
@@ -295,19 +308,12 @@ func cmdRestore(args []string) error {
 	if err != nil {
 		return err
 	}
-	// открытие хранилища гарантирует, что служба остановлена (исключительная блокировка)
-	a, err := app.New(cfg, version)
-	if err != nil {
-		return err
-	}
-	a.Audit.Close()
-	a.DB.Close()
-	if err := app.Restore(*in, cfg.DataPath(), cfg.AuditPath()); err != nil {
+	if err := app.Restore(*in, cfg.DataPath(), cfg.AuditPath(), *allowIncomplete); err != nil {
 		return err
 	}
 	fmt.Println("Данные восстановлены в", cfg.DataPath())
 	if n, err := secure.VerifyAudit(cfg.AuditPath()); err != nil {
-		fmt.Println("ВНИМАНИЕ:", err)
+		return err
 	} else {
 		fmt.Println("Целостность журнала событий подтверждена, записей:", n)
 	}
@@ -328,13 +334,17 @@ func cmdPasswd(args []string) error {
 	}
 	pw := secure.GeneratePassword(16)
 	hash := a.Keys.HashPassword(pw)
-	a.Users.Update(u.ID, func(x *app.User) error {
-		x.PassHash, x.PassChanged, x.MustChange, x.Failed, x.LockedUntil, x.Disabled = hash, time.Now(), true, 0, time.Time{}, false
-		x.TOTPEnabled, x.TOTPSecret = false, ""
-		return nil
-	})
 	for _, s := range a.Sessions.Find(func(s *app.Session) bool { return s.UserID == u.ID }) {
-		a.Sessions.Delete(s.ID)
+		if err := a.Sessions.Delete(s.ID); err != nil {
+			return err
+		}
+	}
+	if err := a.Users.Update(u.ID, func(x *app.User) error {
+		x.PassHash, x.PassChanged, x.MustChange, x.Failed, x.LockedUntil, x.Disabled = hash, time.Now(), true, 0, time.Time{}, false
+		x.TOTPEnabled, x.TOTPSecret, x.TOTPStep = false, "", 0
+		return nil
+	}); err != nil {
+		return err
 	}
 	a.Audit.Log(secure.AuditRecord{Event: "сброс пароля из командной строки", Login: *login, OK: true, Detail: "сброшены блокировка и второй фактор"})
 	fmt.Printf("Пользователь: %s\nВременный пароль: %s\nВторой фактор сброшен, блокировка снята.\n", *login, pw)
@@ -344,10 +354,21 @@ func cmdPasswd(args []string) error {
 func cmdAuditVerify(args []string) error {
 	fs := flag.NewFlagSet("audit-verify", flag.ExitOnError)
 	cfgPath := fs.String("config", app.DefaultConfigPath, "файл конфигурации")
+	acceptArchive := fs.Bool("accept-archived-prefix", false, "подтвердить перенос ранних месяцев; служба остановлена")
 	fs.Parse(args)
 	cfg, err := app.LoadConfig(*cfgPath)
 	if err != nil {
 		return err
+	}
+	if *acceptArchive {
+		lock, err := store.LockDir(filepath.Join(cfg.DataPath(), "db"))
+		if err != nil {
+			return err
+		}
+		defer lock.Close()
+		if err := secure.AcceptArchivedPrefix(cfg.AuditPath()); err != nil {
+			return err
+		}
 	}
 	n, err := secure.VerifyAudit(cfg.AuditPath())
 	if err != nil {

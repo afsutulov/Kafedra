@@ -1,6 +1,7 @@
 package secure
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,5 +79,36 @@ func TestAuditChain(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, filepath.Base(f)), []byte(strings.Replace(string(b), `"login":"admin"`, `"login":"guest"`, 1)), 0o600)
 	if _, err := VerifyAudit(dir); err == nil {
 		t.Fatal("подмена записи не обнаружена")
+	}
+}
+
+func TestAuditTailDeletionAndLegacyLargeRecord(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	record := AuditRecord{Seq: 1, Time: now, Event: "legacy", Login: strings.Repeat("a", 1100000)}
+	record.Hash = record.sum()
+	raw, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "audit-"+now.Format("2006-01")+".log")
+	legacy := append(raw, '\n')
+	if err := os.WriteFile(file, legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a, err := OpenAudit(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Log(AuditRecord{Time: now, Event: "new", Detail: strings.Repeat("x", 1100000)})
+	a.Close()
+	if n, err := VerifyAudit(dir); err != nil || n != 2 {
+		t.Fatalf("audit n=%d: %v", n, err)
+	}
+	if err := os.WriteFile(file, legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifyAudit(dir); err == nil {
+		t.Fatal("tail deletion was not detected")
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"kafedra/internal/secure"
+	"kafedra/internal/store"
 )
 
 // ---------- вопросы ----------
@@ -207,7 +208,7 @@ func (c *Ctx) questionImport() {
 // ---------- прохождение теста ----------
 
 func norm(s string) string {
-	return strings.Join(strings.Fields(strings.ToLower(strings.ReplaceAll(s, "ё", "е"))), " ")
+	return strings.Join(strings.Fields(strings.ReplaceAll(strings.ToLower(s), "ё", "е")), " ")
 }
 
 // scoreQuestion возвращает баллы за ответ на вопрос.
@@ -249,29 +250,78 @@ func scoreQuestion(q *Question, a Answer) float64 {
 	return 0
 }
 
-// finishAttempt завершает попытку и вычисляет результат.
-func (a *App) finishAttempt(id string) {
-	cur, ok := a.Attempts.Get(id)
-	if !ok {
-		return
+func (a *App) preserveAttemptGrading(it *Item, nextMax float64) error {
+	attempts := a.Attempts.Find(func(at *Attempt) bool { return at.ItemID == it.ID })
+	if len(attempts) > 0 && nextMax != it.MaxPoints {
+		return errors.New("максимум баллов нельзя изменить после начала тестирования; создайте новый тест")
 	}
-	it, _ := a.Items.Get(cur.ItemID) // до Update: внутри него обращаться к хранилищу нельзя
-	a.Attempts.Update(id, func(x *Attempt) error {
-		if x.Done {
-			return nil
+	for _, at := range attempts {
+		if at.Grading == nil {
+			if err := a.Attempts.Update(at.ID, func(x *Attempt) error {
+				g := x.grading(it)
+				x.Grading = &g
+				return nil
+			}); err != nil {
+				return fmt.Errorf("не удалось сохранить настройки прежней попытки: %w", err)
+			}
 		}
-		x.Score, x.MaxScore = 0, 0
-		for i := range x.Questions {
-			q := &x.Questions[i]
-			x.MaxScore += q.Points
-			x.Score += scoreQuestion(q, x.Answers[q.ID])
-		}
-		if x.MaxScore > 0 {
-			x.Points = float64(int(x.Score/x.MaxScore*it.MaxPoints*100+0.5)) / 100
-		}
-		x.Done, x.Finished = true, time.Now()
-		if !x.Deadline.IsZero() && x.Finished.After(x.Deadline) {
-			x.Finished = x.Deadline
+	}
+	return nil
+}
+
+func (at *Attempt) grading(it *Item) AttemptGrading {
+	if at.Grading != nil {
+		return *at.Grading
+	}
+	return AttemptGrading{MaxPoints: it.MaxPoints, PassPercent: it.PassPercent}
+}
+
+func (at *Attempt) passed(it *Item) bool {
+	return at.MaxScore > 0 && at.Score/at.MaxScore*100 >= float64(at.grading(it).PassPercent)
+}
+
+func completeAttempt(at *Attempt, it *Item, now time.Time) {
+	if at.Grading == nil {
+		g := at.grading(it)
+		at.Grading = &g
+	}
+	at.Score, at.MaxScore = 0, 0
+	for i := range at.Questions {
+		q := &at.Questions[i]
+		at.MaxScore += q.Points
+		at.Score += scoreQuestion(q, at.Answers[q.ID])
+	}
+	if at.MaxScore > 0 {
+		at.Points = float64(int(at.Score/at.MaxScore*at.Grading.MaxPoints*100+0.5)) / 100
+	}
+	at.Done, at.Finished = true, now
+	if !at.Deadline.IsZero() && at.Finished.After(at.Deadline) {
+		at.Finished = at.Deadline
+	}
+}
+
+// Таймер браузера отправляет форму по истечении времени; допуск учитывает доставку запроса
+// по медленной сети. Момент прихода фиксируется при поступлении запроса (Ctx.Arrived),
+// поэтому ожидание в очереди на запись в допуск не входит.
+const attemptSubmitGrace = 30 * time.Second
+
+func (a *App) finishExpiredAttempt(id string, now time.Time) error {
+	a.attemptQueueMu.Lock()
+	defer a.attemptQueueMu.Unlock()
+	if a.attemptQueue[id] > 0 {
+		return nil
+	}
+	cur, ok := a.Attempts.Get(id)
+	if !ok || cur.Done || cur.Deadline.IsZero() || now.Before(cur.Deadline.Add(attemptSubmitGrace)) {
+		return nil
+	}
+	it, ok := a.Items.Get(cur.ItemID)
+	if !ok {
+		return store.ErrNotFound
+	}
+	return a.Attempts.Update(id, func(at *Attempt) error {
+		if !at.Done {
+			completeAttempt(at, &it, now)
 		}
 		return nil
 	})
@@ -301,16 +351,22 @@ func (c *Ctx) testView(it *Item, co *Course, data map[string]any) {
 	now := time.Now()
 	atts := c.attemptsOf(it.ID, c.User.ID)
 	best := -1.0
+	bestMax := it.MaxPoints
 	for _, a := range atts {
 		if !a.Done {
-			if !a.Deadline.IsZero() && now.After(a.Deadline) {
-				c.finishAttempt(a.ID)
-				c.Redirect("/items/"+it.ID, "")
-				return
+			if !a.Deadline.IsZero() && !now.Before(a.Deadline.Add(attemptSubmitGrace)) {
+				if err := c.finishExpiredAttempt(a.ID, now); err != nil {
+					c.Fail(http.StatusServiceUnavailable, "Не удалось завершить попытку.")
+					return
+				}
+				if updated, ok := c.Attempts.Get(a.ID); ok && updated.Done {
+					c.Redirect("/items/"+it.ID, "")
+					return
+				}
 			}
 			data["Active"] = a
 		} else if a.Points > best {
-			best = a.Points
+			best, bestMax = a.Points, a.grading(it).MaxPoints
 		}
 	}
 	open, why := testOpen(it, now)
@@ -319,7 +375,7 @@ func (c *Ctx) testView(it *Item, co *Course, data map[string]any) {
 		open, why = false, "Все попытки использованы."
 	}
 	data["Attempts"], data["Open"], data["Why"], data["Left"] = atts, open, why, left
-	data["Best"], data["HasBest"] = best, best >= 0
+	data["Best"], data["BestMax"], data["HasBest"] = best, bestMax, best >= 0
 	n := len(it.Questions)
 	if it.PoolSize > 0 && it.PoolSize < n {
 		n = it.PoolSize
@@ -369,14 +425,17 @@ func (c *Ctx) attemptStart() {
 		}
 	}
 	at := Attempt{ID: secure.NewID(), ItemID: it.ID, CourseID: co.ID, UserID: c.User.ID, Started: now, Questions: qs,
-		Answers: map[string]Answer{}, IP: c.IP}
+		Answers: map[string]Answer{}, IP: c.IP, Grading: &AttemptGrading{MaxPoints: it.MaxPoints, PassPercent: it.PassPercent}}
 	if it.TimeLimit > 0 {
 		at.Deadline = now.Add(time.Duration(it.TimeLimit) * time.Minute)
 	}
 	if !it.CloseAt.IsZero() && (at.Deadline.IsZero() || it.CloseAt.Before(at.Deadline)) {
 		at.Deadline = it.CloseAt
 	}
-	c.Attempts.Put(at.ID, at)
+	if err := c.Attempts.Put(at.ID, at); err != nil {
+		c.Fail(http.StatusServiceUnavailable, "Не удалось начать тестирование.")
+		return
+	}
 	c.Log("начало тестирования", co.Title+" / "+it.Title, true, fmt.Sprintf("попытка %d", len(atts)+1))
 	c.Redirect("/attempts/"+at.ID, "")
 }
@@ -402,52 +461,86 @@ func (c *Ctx) readAnswers(at *Attempt) map[string]Answer {
 	return out
 }
 
-// ownAttempt загружает незавершённую попытку текущего учащегося.
-func (c *Ctx) ownAttempt() (*Attempt, bool) {
+func (c *Ctx) ownAttempt() (*Attempt, *Item, bool) {
 	at, ok := c.Attempts.Get(c.R.PathValue("id"))
 	if !ok || at.UserID != c.User.ID {
 		c.Deny()
-		return nil, false
+		return nil, nil, false
 	}
-	return &at, true
-}
-
-func (c *Ctx) storeAnswers(at *Attempt) bool {
-	// ответы принимаются до срока (с допуском 60 с на доставку запроса)
-	if at.Done || (!at.Deadline.IsZero() && time.Now().After(at.Deadline.Add(time.Minute))) {
-		return false
+	co, ok := c.course(at.CourseID, false)
+	if !ok {
+		return nil, nil, false
 	}
-	ans := c.readAnswers(at)
-	return c.Attempts.Update(at.ID, func(x *Attempt) error {
-		if x.Done {
-			return errors.New("завершена")
-		}
-		x.Answers = ans
-		return nil
-	}) == nil
+	it, ok := c.Items.Get(at.ItemID)
+	if !ok || it.CourseID != co.ID || !it.Visible || it.Kind != KindTest {
+		c.Deny()
+		return nil, nil, false
+	}
+	return &at, &it, true
 }
 
 func (c *Ctx) attemptSave() {
-	at, ok := c.ownAttempt()
+	at, _, ok := c.ownAttempt()
 	if !ok {
 		return
 	}
-	if !c.storeAnswers(at) {
+	if at.Done || (!at.Deadline.IsZero() && !c.Arrived.Before(at.Deadline.Add(attemptSubmitGrace))) {
 		c.W.WriteHeader(http.StatusConflict)
+		return
+	}
+	ans := c.readAnswers(at)
+	if err := c.Attempts.Update(at.ID, func(x *Attempt) error {
+		if x.Done {
+			return errAttemptDone
+		}
+		x.Answers = ans
+		return nil
+	}); err != nil {
+		if errors.Is(err, errAttemptDone) {
+			c.W.WriteHeader(http.StatusConflict)
+		} else {
+			c.W.WriteHeader(http.StatusServiceUnavailable)
+		}
 		return
 	}
 	c.W.WriteHeader(http.StatusNoContent)
 }
 
+var errAttemptDone = errors.New("попытка завершена")
+
 func (c *Ctx) attemptSubmit() {
-	at, ok := c.ownAttempt()
+	at, it, ok := c.ownAttempt()
 	if !ok {
 		return
 	}
-	late := !c.storeAnswers(at) && !at.Done
-	c.finishAttempt(at.ID)
-	done, _ := c.Attempts.Get(at.ID)
-	c.Log("завершение тестирования", at.ItemID, true, fmt.Sprintf("результат %s из %s", fmtNum(done.Score), fmtNum(done.MaxScore)))
+	if at.Done {
+		c.Redirect("/attempts/"+at.ID, "")
+		return
+	}
+	ans := c.readAnswers(at)
+	received := c.Arrived
+	late := false
+	err := c.Attempts.Update(at.ID, func(x *Attempt) error {
+		if x.Done {
+			return errAttemptDone
+		}
+		late = !x.Deadline.IsZero() && !received.Before(x.Deadline.Add(attemptSubmitGrace))
+		if !late {
+			x.Answers = ans
+		}
+		completeAttempt(x, it, received)
+		*at = *x
+		return nil
+	})
+	if errors.Is(err, errAttemptDone) {
+		c.Redirect("/attempts/"+at.ID, "")
+		return
+	}
+	if err != nil {
+		c.Fail(http.StatusServiceUnavailable, "Не удалось сохранить результат. Повторите отправку.")
+		return
+	}
+	c.Log("завершение тестирования", at.ItemID, true, fmt.Sprintf("результат %s из %s", fmtNum(at.Score), fmtNum(at.MaxScore)))
 	msg := "Тест завершён."
 	if late {
 		msg = "!Время истекло: засчитаны ответы, сохранённые до окончания срока."
@@ -475,13 +568,20 @@ func (c *Ctx) attemptView() {
 		return
 	}
 	manage := c.canManage(&co)
-	if at.UserID != c.User.ID && !manage {
+	if !manage && (at.UserID != c.User.ID || !c.canView(&co) || !it.Visible) {
 		c.Deny()
 		return
 	}
-	if !at.Done && !at.Deadline.IsZero() && time.Now().After(at.Deadline) {
-		c.finishAttempt(at.ID)
-		at, _ = c.Attempts.Get(at.ID)
+	if !at.Done && !at.Deadline.IsZero() && !time.Now().Before(at.Deadline.Add(attemptSubmitGrace)) {
+		if err := c.finishExpiredAttempt(at.ID, time.Now()); err != nil {
+			c.Fail(http.StatusServiceUnavailable, "Не удалось завершить попытку.")
+			return
+		}
+		at, ok = c.Attempts.Get(at.ID)
+		if !ok {
+			c.Fail(http.StatusNotFound, "Попытка не найдена.")
+			return
+		}
 	}
 	data := map[string]any{"At": at, "Item": it, "Course": co, "Manage": manage, "Student": c.userName(at.UserID)}
 	if !at.Done {
@@ -503,7 +603,7 @@ func (c *Ctx) attemptView() {
 		}
 		data["Review"] = rows
 	}
-	data["Passed"] = at.MaxScore > 0 && at.Score/at.MaxScore*100 >= float64(it.PassPercent)
+	data["Passed"], data["Grading"] = at.passed(&it), at.grading(&it)
 	c.Render("attempt_result", data)
 }
 
@@ -517,7 +617,10 @@ func (c *Ctx) attemptAnnul() {
 	if !ok {
 		return
 	}
-	c.Attempts.Delete(at.ID)
+	if err := c.Attempts.Delete(at.ID); err != nil {
+		c.Fail(http.StatusServiceUnavailable, "Не удалось аннулировать попытку.")
+		return
+	}
 	c.Log("аннулирование попытки", co.Title, true, "учащийся: "+c.userName(at.UserID))
 	c.notify(at.UserID, "Преподаватель аннулировал вашу попытку теста — можно пройти его заново.", "/items/"+at.ItemID)
 	c.Redirect("/items/"+at.ItemID+"/results", "Попытка аннулирована.")
@@ -563,13 +666,18 @@ func (c *Ctx) testResults() {
 		}
 	}
 	var rows []resultRow
-	sum, n := 0.0, 0
+	sum, n, passed := 0.0, 0, 0
 	for _, u := range c.students(co, "") {
 		r := resultRow{User: u, Attempts: sortBy(byUser[u.ID], func(x, y *Attempt) bool { return x.Started.Before(y.Started) })}
+		hasPass := false
 		for _, a := range r.Attempts {
+			hasPass = hasPass || (a.Done && a.passed(it))
 			if a.Done && (!r.HasBest || a.Points > r.Best) {
 				r.Best, r.HasBest = a.Points, true
 			}
+		}
+		if hasPass {
+			passed++
 		}
 		if r.HasBest {
 			sum += r.Best
@@ -585,7 +693,7 @@ func (c *Ctx) testResults() {
 	if n > 0 {
 		avg = sum / float64(n)
 	}
-	c.Render("test_results", map[string]any{"Item": it, "Course": co, "Rows": rows, "Stats": qs, "Avg": avg, "Passed": n, "GroupNames": c.groupNames()})
+	c.Render("test_results", map[string]any{"Item": it, "Course": co, "Rows": rows, "Stats": qs, "Avg": avg, "Passed": passed, "GroupNames": c.groupNames()})
 }
 
 // ---------- задания ----------
@@ -643,19 +751,28 @@ func (c *Ctx) taskSubmit() {
 		return
 	}
 	if c.R.MultipartForm != nil && len(c.R.MultipartForm.File["file"]) > 0 {
-		m, err := c.saveUpload(c.R.MultipartForm.File["file"][0], co.ID, "sub")
+		m, err := c.saveUpload(c.R.MultipartForm.File["file"][0], co.ID, "sub", it.ID)
 		if err != nil {
 			c.Redirect(back, "!Файл не принят: "+err.Error()+".")
 			return
 		}
-		c.removeFile(old.FileID)
 		s.FileID = m.ID
 	}
 	if s.Text == "" && s.FileID == "" {
 		c.Redirect(back, "!Добавьте текст ответа или файл.")
 		return
 	}
-	c.Subs.Put(id, s)
+	if err := c.Subs.Put(id, s); err != nil {
+		if s.FileID != old.FileID {
+			c.removeFile(s.FileID)
+		}
+		c.Log("сдача работы", co.Title+" / "+it.Title, false, err.Error())
+		c.Fail(http.StatusServiceUnavailable, "Не удалось сохранить работу. Повторите отправку.")
+		return
+	}
+	if s.FileID != old.FileID {
+		c.removeFile(old.FileID)
+	}
 	c.Log("сдача работы", co.Title+" / "+it.Title, true, "")
 	for _, t := range co.TeacherIDs {
 		c.notify(t, c.User.FullName+" сдал(а) работу «"+it.Title+"».", back)
@@ -674,15 +791,19 @@ func (c *Ctx) taskGrade() {
 		return
 	}
 	it, _ := c.Items.Get(s.ItemID)
-	pts := atof(c.F("points"), -1, -1, it.MaxPoints)
-	if pts < 0 {
+	pts := atof(c.F("points"), -1, -1, 1e9)
+	if pts < 0 || pts > it.MaxPoints {
 		c.Redirect("/items/"+it.ID, "!Укажите баллы от 0 до "+fmtNum(it.MaxPoints)+".")
 		return
 	}
-	c.Subs.Update(s.ID, func(x *Submission) error {
+	if err := c.Subs.Update(s.ID, func(x *Submission) error {
 		x.Graded, x.Points, x.Comment, x.GradedBy, x.GradedAt = true, pts, c.F("comment"), c.User.ID, time.Now()
 		return nil
-	})
+	}); err != nil {
+		c.Log("выставление оценки", co.Title+" / "+it.Title, false, err.Error())
+		c.Fail(http.StatusServiceUnavailable, "Не удалось сохранить оценку.")
+		return
+	}
 	c.Log("выставление оценки", co.Title+" / "+it.Title, true, fmt.Sprintf("%s: %s", c.userName(s.UserID), fmtNum(pts)))
 	c.notify(s.UserID, fmt.Sprintf("Работа «%s» оценена: %s из %s.", it.Title, fmtNum(pts), fmtNum(it.MaxPoints)), "/items/"+it.ID)
 	c.Redirect("/items/"+it.ID, "Оценка выставлена.")
