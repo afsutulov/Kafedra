@@ -19,6 +19,7 @@
   <div class="form-grid three">
     <label>Неудачных попыток до блокировки<input type="number" name="lock_attempts" value="{{.S.LockAttempts}}" min="3" max="20"></label>
     <label>Длительность блокировки, мин<input type="number" name="lock_minutes" value="{{.S.LockMinutes}}" min="1" max="1440"></label>
+    <label>Неудачных входов с одного адреса за 10 минут<input type="number" name="ip_fail_limit" value="{{if .S.IPFailLimit}}{{.S.IPFailLimit}}{{else}}100{{end}}" min="20" max="100000"></label>
     <label>Завершать сеанс при бездействии, мин<input type="number" name="idle_minutes" value="{{.S.IdleMinutes}}" min="5" max="480"></label>
     <label>Предельная длительность сеанса, ч<input type="number" name="session_hours" value="{{.S.SessionHours}}" min="1" max="72"></label>
     <label>Одновременных сеансов на пользователя<input type="number" name="max_sessions" value="{{.S.MaxSessions}}" min="1" max="20"></label>
@@ -39,6 +40,12 @@
   <label class="check"><input type="checkbox" name="rating_names" value="1" {{if .S.RatingNames}}checked{{end}}>Показывать учащимся ФИО одногруппников в рейтинге (иначе видно только собственное место)</label>
   <label class="check"><input type="checkbox" name="teacher_import" value="1" {{if .S.TeacherImport}}checked{{end}}>Преподаватели могут добавлять группы учащихся из Excel (создавать учётные записи учащихся)</label>
   <label class="check"><input type="checkbox" name="teacher_courses" value="1" {{if .S.TeacherCourses}}checked{{end}}>Преподаватели могут создавать курсы самостоятельно</label>
+  <h3>Анкета, сертификаты, общение</h3>
+  <label class="check"><input type="checkbox" name="quest_required" value="1" {{if .S.QuestRequired}}checked{{end}}>Анкета перед началом обучения: до проверки анкеты учащийся не допускается к материалам</label>
+  <label>Адрес, на который учащиеся отправляют анкету (пусто — адрес преподавателя курса)<input type="email" name="quest_email" value="{{.S.QuestEmail}}" maxlength="254" placeholder="admission@example.edu"></label>
+  <label class="check"><input type="checkbox" name="cert_needs_app" value="1" {{if .S.CertNeedsApp}}checked{{end}}>Сертификат выдаётся только после загрузки скана подписанного заявления</label>
+  <label>Предельный размер вложения в чате, МБ<input type="number" name="chat_max_file" value="{{.S.ChatMaxFileMB}}" min="1" max="100"></label>
+  <p class="note">Отправка сертификатов по электронной почте включается в файле конфигурации: параметры <span class="mono">smtp_addr</span>, <span class="mono">smtp_from</span>.</p>
   <h3>Файлы</h3>
   <div class="form-grid">
     <label>Максимальный размер файла, МБ<input type="number" name="max_upload" value="{{.S.MaxUploadMB}}" min="1" max="4096"></label>

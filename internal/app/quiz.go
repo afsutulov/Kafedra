@@ -155,7 +155,7 @@ func (c *Ctx) questionSave() {
 		c.Redirect(back, "!Вопрос не сохранён: "+err.Error()+".")
 		return
 	}
-	c.Items.Update(it.ID, func(x *Item) error {
+	err := c.Items.Update(it.ID, func(x *Item) error {
 		for i := range x.Questions {
 			if x.Questions[i].ID == q.ID {
 				x.Questions[i] = q
@@ -166,6 +166,10 @@ func (c *Ctx) questionSave() {
 		x.Questions = append(x.Questions, q)
 		return nil
 	})
+	if err != nil {
+		c.Fail(http.StatusServiceUnavailable, "Не удалось сохранить вопрос.")
+		return
+	}
 	c.Redirect(back, "Вопрос сохранён.")
 }
 
@@ -175,7 +179,7 @@ func (c *Ctx) questionDelete() {
 		return
 	}
 	qid := c.F("qid")
-	c.Items.Update(it.ID, func(x *Item) error {
+	err := c.Items.Update(it.ID, func(x *Item) error {
 		for i := range x.Questions {
 			if x.Questions[i].ID == qid {
 				x.Questions = append(x.Questions[:i], x.Questions[i+1:]...)
@@ -187,6 +191,10 @@ func (c *Ctx) questionDelete() {
 		}
 		return nil
 	})
+	if err != nil {
+		c.Fail(http.StatusServiceUnavailable, "Не удалось удалить вопрос.")
+		return
+	}
 	c.Redirect("/items/"+it.ID+"/edit#questions", "Вопрос удалён.")
 }
 
@@ -201,7 +209,10 @@ func (c *Ctx) questionImport() {
 		c.Redirect(back, "!Импорт не выполнен: "+err.Error()+".")
 		return
 	}
-	c.Items.Update(it.ID, func(x *Item) error { x.Questions = append(x.Questions, qs...); return nil })
+	if err := c.Items.Update(it.ID, func(x *Item) error { x.Questions = append(x.Questions, qs...); return nil }); err != nil {
+		c.Fail(http.StatusServiceUnavailable, "Не удалось сохранить вопросы.")
+		return
+	}
 	c.Redirect(back, fmt.Sprintf("Добавлено вопросов: %d.", len(qs)))
 }
 
@@ -345,7 +356,7 @@ func testOpen(it *Item, now time.Time) (bool, string) {
 func (c *Ctx) testView(it *Item, co *Course, data map[string]any) {
 	if c.canManage(co) {
 		data["AttemptCount"] = c.Attempts.Count(func(a *Attempt) bool { return a.ItemID == it.ID && a.Done })
-		c.Render("test", data)
+		c.Render("quiz", data)
 		return
 	}
 	now := time.Now()
@@ -381,7 +392,7 @@ func (c *Ctx) testView(it *Item, co *Course, data map[string]any) {
 		n = it.PoolSize
 	}
 	data["QCount"] = n
-	c.Render("test", data)
+	c.Render("quiz", data)
 }
 
 func (c *Ctx) attemptStart() {
@@ -446,8 +457,8 @@ func (c *Ctx) readAnswers(at *Attempt) map[string]Answer {
 		var a Answer
 		if q.Type == "text" {
 			a.Text = c.F("q_" + q.ID)
-			if len(a.Text) > 500 {
-				a.Text = a.Text[:500]
+			if runes := []rune(a.Text); len(runes) > 500 {
+				a.Text = string(runes[:500])
 			}
 		} else {
 			for _, v := range c.R.Form["q_"+q.ID] {
@@ -693,7 +704,7 @@ func (c *Ctx) testResults() {
 	if n > 0 {
 		avg = sum / float64(n)
 	}
-	c.Render("test_results", map[string]any{"Item": it, "Course": co, "Rows": rows, "Stats": qs, "Avg": avg, "Passed": passed, "GroupNames": c.groupNames()})
+	c.Render("quiz_results", map[string]any{"Item": it, "Course": co, "Rows": rows, "Stats": qs, "Avg": avg, "Passed": passed, "GroupNames": c.groupNames()})
 }
 
 // ---------- задания ----------

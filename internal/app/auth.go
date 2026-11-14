@@ -57,7 +57,49 @@ func (c *Ctx) passwordExpired() bool {
 	return d > 0 && time.Since(c.User.PassChanged) > time.Duration(d)*24*time.Hour
 }
 
-// allow — ограничение частоты попыток входа с одного адреса (20 за 10 минут).
+// Ограничение подбора паролей с одного адреса. Считаются только НЕУДАЧНЫЕ попытки: за общим
+// веб-сервером или NAT учебного класса с одного адреса входят десятки людей, и счёт всех
+// попыток (как было до 1.4.4) не пускал в систему 21-го пользователя. Основная защита учётной
+// записи — её блокировка после нескольких неверных паролей.
+func (a *App) ipFailLimit() int {
+	if n := a.S().IPFailLimit; n > 0 {
+		return n
+	}
+	return 100
+}
+
+// tooManyFailures сообщает, что с адреса за 10 минут пришло слишком много неудачных попыток входа.
+func (a *App) tooManyFailures(ip string) bool {
+	limit := a.ipFailLimit()
+	a.limMu.Lock()
+	defer a.limMu.Unlock()
+	now, n := time.Now(), 0
+	for _, t := range a.lim["login:"+ip] {
+		if now.Sub(t) < 10*time.Minute {
+			n++
+		}
+	}
+	return n >= limit
+}
+
+// noteFailure учитывает неудачную попытку входа с адреса.
+func (a *App) noteFailure(ip string) {
+	a.limMu.Lock()
+	defer a.limMu.Unlock()
+	now, key := time.Now(), "login:"+ip
+	keep := a.lim[key][:0]
+	for _, t := range a.lim[key] {
+		if now.Sub(t) < 10*time.Minute {
+			keep = append(keep, t)
+		}
+	}
+	a.lim[key] = append(keep, now)
+	if len(a.lim) > 100000 {
+		a.lim = map[string][]time.Time{}
+	}
+}
+
+// allow — ограничение частоты попыток по ключу (20 за 10 минут); используется для кодов второго фактора.
 func (a *App) allow(ip string) bool {
 	a.limMu.Lock()
 	defer a.limMu.Unlock()
@@ -94,13 +136,16 @@ func (c *Ctx) loginPost() {
 		auditLogin = auditLogin[:40]
 	}
 	fail := func(reason string) {
+		c.noteFailure(c.IP)
 		c.Audit.Log(secure.AuditRecord{Event: "вход в систему", Login: auditLogin, IP: c.IP, OK: false, Detail: reason})
 		c.W.WriteHeader(http.StatusUnauthorized)
 		// одинаковое сообщение для всех причин: не раскрываем существование учётной записи
 		c.Render("login", map[string]any{"Banner": c.S().Banner, "Error": "Неверный логин или пароль либо учётная запись заблокирована."})
 	}
-	if !c.allow(c.IP) {
-		fail("превышена частота попыток с адреса")
+	if c.tooManyFailures(c.IP) {
+		c.Audit.Log(secure.AuditRecord{Event: "вход в систему", Login: auditLogin, IP: c.IP, OK: false, Detail: "превышено число неудачных попыток с адреса"})
+		c.W.WriteHeader(http.StatusTooManyRequests)
+		c.Render("login", map[string]any{"Banner": c.S().Banner, "Error": "Слишком много неудачных попыток входа с вашего адреса. Повторите через несколько минут."})
 		return
 	}
 	if !reLogin.MatchString(login) {
@@ -250,24 +295,35 @@ func (c *Ctx) policy() secure.Policy {
 	return secure.Policy{MinLength: s.PwMinLen, NeedUpper: s.PwUpper, NeedLower: s.PwLower, NeedDigit: s.PwDigit, NeedSymbol: s.PwSymbol}
 }
 
-// setPassword проверяет новый пароль по политике и истории и сохраняет его.
-func (a *App) setPassword(userID, pw string, pol secure.Policy, history int, mustChange bool) error {
-	u, ok := a.Users.Get(userID)
-	if !ok {
-		return errors.New("пользователь не найден")
-	}
+// preparePassword проверяет новый пароль по политике и истории и вычисляет его хеш.
+// В хранилище ничего не пишет: это самая долгая часть смены пароля (до восьми вычислений
+// PBKDF2), и выполнять её нужно ВНЕ общей блокировки записи.
+func (a *App) preparePassword(u User, pw string, pol secure.Policy, checkHistory, skipCurrent bool) (string, error) {
 	if errs := secure.CheckPassword(pw, u.Login, pol); len(errs) > 0 {
-		return errors.New(strings.Join(errs, "; "))
+		return "", errors.New(strings.Join(errs, "; "))
 	}
-	if !mustChange { // при сбросе администратором история не проверяется
-		for _, old := range append([]string{u.PassHash}, u.PassHistory...) {
-			if ok, _ := a.Keys.VerifyPassword(pw, old); ok {
-				return errors.New("пароль совпадает с одним из предыдущих")
+	if checkHistory { // при сбросе администратором история не проверяется
+		old := u.PassHistory
+		if !skipCurrent { // вызывающий уже убедился, что новый пароль отличается от действующего
+			old = append([]string{u.PassHash}, old...)
+		}
+		for _, h := range old {
+			if ok, _ := a.Keys.VerifyPassword(pw, h); ok {
+				return "", errors.New("пароль совпадает с одним из предыдущих")
 			}
 		}
 	}
-	hash := a.Keys.HashPassword(pw)
+	return a.Keys.HashPassword(pw), nil
+}
+
+var errPasswordChanged = errors.New("учётная запись изменилась, повторите действие")
+
+// storePassword записывает заранее вычисленный хеш, если пароль с момента проверки не менялся.
+func (a *App) storePassword(userID, expectHash, hash string, history int, mustChange bool) error {
 	return a.Users.Update(userID, func(x *User) error {
+		if x.PassHash != expectHash {
+			return errPasswordChanged
+		}
 		if x.PassHash != "" {
 			x.PassHistory = append([]string{x.PassHash}, x.PassHistory...)
 		}
@@ -277,6 +333,19 @@ func (a *App) setPassword(userID, pw string, pol secure.Policy, history int, mus
 		x.PassHash, x.PassChanged, x.MustChange, x.Failed, x.LockedUntil = hash, time.Now(), mustChange, 0, time.Time{}
 		return nil
 	})
+}
+
+// setPassword проверяет новый пароль по политике и истории и сохраняет его.
+func (a *App) setPassword(userID, pw string, pol secure.Policy, history int, mustChange bool) error {
+	u, ok := a.Users.Get(userID)
+	if !ok {
+		return errors.New("пользователь не найден")
+	}
+	hash, err := a.preparePassword(u, pw, pol, !mustChange, false)
+	if err != nil {
+		return err
+	}
+	return a.storePassword(userID, u.PassHash, hash, history, mustChange)
 }
 
 func (c *Ctx) passwordPage() {
@@ -302,6 +371,10 @@ func (c *Ctx) teacherMails() []User {
 	return out
 }
 
+// passwordPost — смена пароля и согласие на обработку персональных данных. Обработчик сам берёт
+// блокировку записи (см. selfLocking): проверка текущего пароля, сверка с историей и вычисление
+// нового хеша выполняются до неё. Иначе одновременная смена временных паролей учебной группой
+// на десятки секунд останавливала сохранение ответов и сдачу тестов у всех пользователей.
 func (c *Ctx) passwordPost() {
 	needConsent := c.User.Consent.IsZero()
 	forced := c.User.MustChange || c.passwordExpired()
@@ -314,8 +387,9 @@ func (c *Ctx) passwordPost() {
 		return
 	}
 	changing := forced || c.R.FormValue("new") != ""
+	userID, oldHash, newHash := c.User.ID, c.User.PassHash, ""
 	if changing {
-		if ok, _ := c.Keys.VerifyPassword(c.R.FormValue("old"), c.User.PassHash); !ok {
+		if ok, _ := c.Keys.VerifyPassword(c.R.FormValue("old"), oldHash); !ok {
 			c.Log("смена пароля", "", false, "неверный текущий пароль")
 			bad("Текущий пароль указан неверно.")
 			return
@@ -324,12 +398,33 @@ func (c *Ctx) passwordPost() {
 			bad("Новый пароль и его подтверждение не совпадают.")
 			return
 		}
+		// текущий пароль только что подтверждён: совпадение с ним видно без вычисления хеша
+		if c.R.FormValue("new") == c.R.FormValue("old") {
+			bad("Пароль не принят: пароль совпадает с одним из предыдущих.")
+			return
+		}
+		var err error
+		if newHash, err = c.preparePassword(*c.User, c.R.FormValue("new"), c.policy(), true, true); err != nil {
+			bad("Пароль не принят: " + err.Error() + ".")
+			return
+		}
+	}
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	// сеанс и учётная запись могли измениться, пока вычислялся хеш
+	c.User, c.Sess = nil, nil
+	c.loadSession()
+	if c.User == nil || c.User.ID != userID || c.User.PassHash != oldHash || !secure.Equal(c.F("csrf"), c.Sess.CSRF) {
+		c.Fail(http.StatusConflict, "Учётная запись или сеанс изменились. Повторите действие.")
+		return
+	}
+	if changing {
 		if err := c.revokeSessions(c.User.ID, c.Sess.ID); err != nil {
 			c.Fail(http.StatusServiceUnavailable, "Не удалось завершить другие сеансы.")
 			return
 		}
-		if err := c.setPassword(c.User.ID, c.R.FormValue("new"), c.policy(), c.S().PwHistory, false); err != nil {
-			bad("Пароль не принят: " + err.Error() + ".")
+		if err := c.storePassword(userID, oldHash, newHash, c.S().PwHistory, false); err != nil {
+			c.Fail(http.StatusServiceUnavailable, "Не удалось сохранить пароль.")
 			return
 		}
 		c.Log("смена пароля", "", true, "")

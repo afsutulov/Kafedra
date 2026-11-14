@@ -1,0 +1,24 @@
+{{define "title"}}Аналитика: {{.Course.Title}}{{end}}
+{{define "content"}}
+{{template "coursetabs" .}}
+<form method="get" class="form-grid four glass-subcard">
+  <label>Группа<select name="group"><option value="">Все группы курса</option>{{range .Course.GroupIDs}}<option value="{{.}}" {{if eq . $.Group}}selected{{end}}>{{index $.GroupNames .}}</option>{{end}}</select></label>
+  <label>Тест<select name="test"><option value="">Курс в целом</option>{{range .Tests}}<option value="{{.ID}}" {{if eq .ID $.Test}}selected{{end}}>{{.Title}}</option>{{end}}</select></label>
+  <label>Период с<input type="date" name="from" value="{{.From}}"></label>
+  <label>по<input type="date" name="to" value="{{.To}}"></label>
+  <div class="full row"><button class="ghost-btn" type="submit">Показать</button>
+    <a class="primary-btn link-btn" href="/courses/{{.Course.ID}}/analytics.xlsx{{if .Query}}?{{.Query}}{{end}}">Экспорт (XLSX)</a></div>
+</form>
+<div class="grid four">
+  <div class="tile"><span class="muted">Учащихся</span><span class="stat">{{len .Rows}}</span></div>
+  <div class="tile"><span class="muted">Есть результаты</span><span class="stat">{{.With}}</span></div>
+  <div class="tile"><span class="muted">Пройдено</span><span class="stat">{{.Passed}}</span></div>
+  <div class="tile"><span class="muted">Средний процент</span><span class="stat">{{num .Avg}}</span></div>
+</div>
+<p class="note">{{.Scope}}. Статус «Пройдено»: по тесту — набран порог зачёта; по курсу — изучены все материалы, тесты сданы на зачёт, задания проверены. Период отбирает даты изучения материалов, завершения тестов и выставления оценок. Максимум баллов берётся по выбранному тесту или всему курсу.</p>
+<div class="table-wrap"><table class="compact"><thead><tr><th>ФИО</th><th>Email</th><th>Группа</th><th class="num" title="Набранные баллы">Баллы</th><th class="num" title="Максимальный балл">Макс.</th><th class="num" title="Процент выполнения">%</th><th>Статус</th></tr></thead><tbody>
+{{range .Rows}}<tr><td>{{.Name}}</td><td>{{.Email}}</td><td>{{.Group}}</td><td class="num">{{if .HasData}}{{num .Points}}{{else}}—{{end}}</td><td class="num">{{num .Max}}</td><td class="num">{{if .HasData}}{{num .Percent}}{{else}}—{{end}}</td>
+<td>{{if .Passed}}<span class="tag ok">Пройдено</span>{{else}}<span class="tag warn">Не пройдено</span>{{end}}</td></tr>
+{{else}}<tr><td colspan="7" class="muted">В выбранных группах нет учащихся.</td></tr>{{end}}
+</tbody></table></div>
+{{end}}

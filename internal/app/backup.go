@@ -176,18 +176,18 @@ func (a *App) backupWrite(w io.Writer, plan *backupPlan, withKey bool) ([]string
 			manifest.Damaged = append(manifest.Damaged, m.ID)
 		}
 	}
-	if err := a.Audit.WithFiles(func(files []string) error {
-		for _, filename := range files {
-			name := filepath.Base(filename)
-			manifest.AuditHead = manifest.AuditHead || name == secure.AuditHeadFile
-			if err := copyToZIP(zw, "audit/"+name, filename, nil); err != nil {
-				return err
-			}
+	if err := a.Audit.WithSnapshot(func(name string, r io.Reader) error {
+		manifest.AuditHead = manifest.AuditHead || name == secure.AuditHeadFile
+		w, err := zw.Create("audit/" + name)
+		if err != nil {
+			return err
 		}
-		return nil
+		_, err = io.Copy(w, r)
+		return err
 	}); err != nil {
 		return nil, err
 	}
+
 	if withKey {
 		if err := writeZIPEntry(zw, "master.key", plan.key); err != nil {
 			return nil, err

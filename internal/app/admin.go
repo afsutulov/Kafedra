@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
+	"net/mail"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -19,7 +19,23 @@ var reLogin = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{2,39}$`)
 
 // CreateUser создаёт учётную запись с временным паролем (смена при первом входе).
 func (a *App) CreateUser(login, name, email, role, groupID, password string) (User, error) {
+	if err := a.checkUserEmail(strings.TrimSpace(email), ""); err != nil {
+		return User{}, err
+	}
 	return a.createUser(login, name, email, role, groupID, a.Keys.HashPassword(password))
+}
+
+func (a *App) checkUserEmail(email, excludeID string) error {
+	if email == "" {
+		return nil
+	}
+	if !validEmail(email) {
+		return errors.New("некорректный адрес электронной почты")
+	}
+	if a.Users.Count(func(u *User) bool { return u.ID != excludeID && strings.EqualFold(u.Email, email) }) != 0 {
+		return errors.New("адрес электронной почты уже используется")
+	}
+	return nil
 }
 
 // createUser создаёт учётную запись с заранее вычисленным хешем пароля.
@@ -114,6 +130,13 @@ func (c *Ctx) adminUserSave() {
 	if _, ok := c.Groups.Get(c.F("group")); ok && role == RoleStudent {
 		groupID = c.F("group")
 	}
+	email := c.F("email")
+	if email != u.Email {
+		if err := c.checkUserEmail(email, u.ID); err != nil {
+			c.Redirect(back, "!"+err.Error())
+			return
+		}
+	}
 	resetMFA := c.F("reset_mfa") == "1"
 	if disabled || role != u.Role || resetMFA {
 		if err := c.revokeSessions(u.ID, ""); err != nil {
@@ -128,7 +151,7 @@ func (c *Ctx) adminUserSave() {
 		if x.Disabled != disabled {
 			changes = append(changes, fmt.Sprintf("отключена: %v", disabled))
 		}
-		x.FullName, x.Email, x.Role, x.Disabled = c.F("name"), c.F("email"), role, disabled
+		x.FullName, x.Email, x.Role, x.Disabled = c.F("name"), email, role, disabled
 		x.GroupID = groupID
 		if c.F("unlock") == "1" {
 			x.LockedUntil, x.Failed = time.Time{}, 0
@@ -174,6 +197,20 @@ func (a *App) DeleteUser(id string) {
 	}
 	for _, x := range a.Attempts.Find(func(x *Attempt) bool { return x.UserID == id }) {
 		a.Attempts.Delete(x.ID)
+	}
+	// сообщения чатов, исключения и загруженные заявления — тоже персональные данные
+	for _, x := range a.Posts.Find(func(x *Post) bool { return x.AuthorID == id }) {
+		if a.Posts.Delete(x.ID) == nil {
+			a.removeFile(x.FileID)
+		}
+	}
+	for _, x := range a.ChatBans.Find(func(x *ChatBan) bool { return x.UserID == id }) {
+		a.ChatBans.Delete(x.ID)
+	}
+	for _, x := range a.CertApps.Find(func(x *CertApplication) bool { return x.UserID == id }) {
+		if a.CertApps.Delete(x.ID) == nil {
+			a.removeFile(x.FileID)
+		}
 	}
 	for _, x := range a.Certs.Find(func(x *Certificate) bool { return x.UserID == id }) {
 		if err := a.Certs.Delete(x.ID); err == nil {
@@ -231,68 +268,24 @@ func (c *Ctx) adminUserDelete() {
 }
 
 func (c *Ctx) adminUserImport() {
-	if c.R.MultipartForm == nil || len(c.R.MultipartForm.File["file"]) == 0 {
-		c.Redirect("/admin/users", "!Выберите файл CSV.")
-		return
-	}
-	f, err := c.R.MultipartForm.File["file"][0].Open()
+	rows, err := c.readUserImport("")
 	if err != nil {
-		c.Redirect("/admin/users", "!Не удалось прочитать файл.")
+		c.Redirect("/admin/users", "!"+err.Error())
 		return
 	}
-	defer f.Close()
-	raw, _ := io.ReadAll(io.LimitReader(f, 4<<20))
-	text := strings.TrimPrefix(strings.ToValidUTF8(string(raw), "?"), "\xef\xbb\xbf")
-	roles := map[string]string{"student": RoleStudent, "учащийся": RoleStudent, "студент": RoleStudent, "": RoleStudent,
-		"teacher": RoleTeacher, "преподаватель": RoleTeacher, "admin": RoleAdmin, "администратор": RoleAdmin}
-	var rows []importRow
-	for i, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		p := strings.Split(line, ";")
-		for len(p) < 5 {
-			p = append(p, "")
-		}
-		for j := range p {
-			p[j] = strings.TrimSpace(p[j])
-		}
-		if strings.EqualFold(p[0], "логин") || strings.EqualFold(p[0], "login") {
-			continue // строка заголовка
-		}
-		row := importRow{Line: i + 1, Login: p[0], Name: p[1], Group: p[3], Email: p[4]}
-		role, okRole := roles[strings.ToLower(p[2])]
-		if !okRole {
-			row.Result = "ошибка: неизвестная роль"
-		}
-		row.Role = role
-		rows = append(rows, row)
-	}
-	if len(rows) > 5000 {
-		c.Redirect("/admin/users", "!За один раз можно загрузить не более 5000 строк.")
+	if len(rows) == 0 || len(rows) > 5000 {
+		c.Redirect("/admin/users", "!В файле должно быть от 1 до 5000 строк с данными.")
 		return
 	}
+	markDuplicateEmails(rows)
 	created, allowed := c.bulkCreate(rows, RoleAdmin, "")
 	if !allowed {
 		c.Deny()
 		return
 	}
-	var out strings.Builder
-	out.WriteString("\xef\xbb\xbfлогин;ФИО;временный пароль;результат\r\n")
-	for _, r := range rows {
-		pw := ""
-		if r.Created {
-			pw = r.pw
-		}
-		out.WriteString(csvCell(r.Login) + ";" + csvCell(r.Name) + ";" + csvCell(pw) + ";" + csvCell(r.Result) + "\r\n")
-	}
-	c.Log("импорт учётных записей", "", true, fmt.Sprintf("создано: %d", created))
-	c.W.Header().Set("Content-Type", "text/csv; charset=utf-8")
-	c.W.Header().Set("Content-Disposition", `attachment; filename="import-result.csv"`)
-	c.W.Write([]byte(out.String()))
+	c.Log("импорт учётных записей", "", created == len(rows), fmt.Sprintf("строк: %d, создано: %d", len(rows), created))
+	c.sendXLSX("Результат импорта пользователей.xlsx", importResultSheet(rows))
 }
-
-// ---------- группы ----------
 
 func (c *Ctx) adminGroups() {
 	type row struct {
@@ -348,6 +341,7 @@ func (c *Ctx) adminGroupDelete() {
 			return nil
 		})
 	}
+	c.dropChat(func(x *Post) bool { return x.GroupID == id }, "g-"+id)
 	c.Groups.Delete(id)
 	c.Log("удаление группы", g.Name, true, "")
 	c.Redirect("/admin/groups", "Группа удалена.")
@@ -367,6 +361,7 @@ func (c *Ctx) adminSettingsSave() {
 	s.PwMaxAgeDays = atoi(c.F("pw_max_age"), 90, 0, 730)
 	s.LockAttempts = atoi(c.F("lock_attempts"), 5, 3, 20)
 	s.LockMinutes = atoi(c.F("lock_minutes"), 15, 1, 1440)
+	s.IPFailLimit = atoi(c.F("ip_fail_limit"), 100, 20, 100000)
 	s.IdleMinutes = atoi(c.F("idle_minutes"), 30, 5, 480)
 	s.SessionHours = atoi(c.F("session_hours"), 12, 1, 72)
 	s.MaxSessions = atoi(c.F("max_sessions"), 3, 1, 20)
@@ -377,6 +372,14 @@ func (c *Ctx) adminSettingsSave() {
 	s.Grade4 = atoi(c.F("grade4"), 70, 1, s.Grade5)
 	s.Grade3 = atoi(c.F("grade3"), 50, 1, s.Grade4)
 	s.RatingNames, s.TeacherCourses, s.TeacherImport = b("rating_names"), b("teacher_courses"), b("teacher_import")
+	s.QuestRequired, s.CertNeedsApp = b("quest_required"), b("cert_needs_app")
+	s.ChatMaxFileMB = atoi(c.F("chat_max_file"), 10, 1, 100)
+	s.QuestEmail = ""
+	if addr := c.F("quest_email"); addr != "" {
+		if parsed, err := mail.ParseAddress(addr); err == nil && parsed.Address == addr && len(addr) <= 254 {
+			s.QuestEmail = addr
+		}
+	}
 	s.MaxUploadMB = atoi(c.F("max_upload"), 200, 1, 4096)
 	var exts []string
 	for _, e := range strings.Fields(strings.ToLower(c.F("allowed_ext"))) {

@@ -1,0 +1,9 @@
+{{define "title"}}Общение{{end}}
+{{define "content"}}
+<h2>Общение</h2>
+<p class="note">Групповые чаты курсов и учебных групп. Сообщения видят все участники чата и преподаватели.</p>
+<div class="grid">{{range .Rooms}}
+  <a class="tile" href="/chat/{{.Key}}"><span class="muted">{{.Kind}}</span><h3>{{.Title}}</h3>
+  <span class="muted">Сообщений: {{.Count}}{{if not (zero .Last)}} · последнее {{dt .Last}}{{end}}</span></a>
+{{else}}<p class="muted">Доступных чатов пока нет: они появятся, когда вас включат в группу или назначат курс.</p>{{end}}</div>
+{{end}}

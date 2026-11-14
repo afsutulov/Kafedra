@@ -57,6 +57,7 @@
     <label>Вопросов в попытке (0 — все)<input type="number" name="pool_size" value="{{.Item.PoolSize}}" min="0" max="1000"></label>
   </div>
   <label class="check"><input type="checkbox" name="shuffle" value="1" {{if .Item.Shuffle}}checked{{end}}>Перемешивать вопросы и варианты ответов</label>
+  <label class="check"><input type="checkbox" name="hide_points" value="1" {{if .Item.HidePoints}}checked{{end}}>Скрывать баллы во время прохождения (учащийся видит только «Вопрос N из M»; баллы — на экране результатов)</label>
   <label class="check"><input type="checkbox" name="show_answers" value="1" {{if .Item.ShowAnswers}}checked{{end}}>Показывать учащемуся разбор ответов после завершения</label>
   {{end}}
 

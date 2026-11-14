@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 	_ "time/tzdata" // встроенная база часовых поясов: не зависит от пакетов операционной системы
@@ -30,7 +31,7 @@ import (
 	"kafedra/internal/store"
 )
 
-var version = "1.3.1"
+var version = "1.4.4"
 
 const usage = `ПК «Кафедра» — система управления обучением
 © ГБУ ПК «Центр информационного развития ПК»%.0s
@@ -217,6 +218,16 @@ func cmdServe(args []string) (result error) {
 			return fmt.Errorf("сертификат TLS не загружен: %w (для работы без сертификатов за внешним веб-сервером оставьте tls_cert и tls_key пустыми)", err)
 		}
 	}
+	mailCtx, stopMail := context.WithCancel(context.Background())
+	mailDone := make(chan struct{})
+	go func() {
+		defer close(mailDone)
+		a.RunCertificateMailer(mailCtx)
+	}()
+	defer func() {
+		stopMail()
+		<-mailDone
+	}()
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
@@ -228,6 +239,9 @@ func cmdServe(args []string) (result error) {
 		<-done
 	}()
 	a.Audit.Log(secure.AuditRecord{Event: "запуск системы", OK: true, Detail: fmt.Sprintf("версия %s, sha256 исполняемого файла %s, TLS: %v", version, a.BinSum, useTLS)})
+	if strings.TrimSpace(a.Cfg.OrgName) == "" {
+		log.Print("ВНИМАНИЕ: в config.json не задан org_name — сертификаты о прохождении обучения выдаваться не будут.")
+	}
 	errc := make(chan error, 1)
 	go func() {
 		switch {
@@ -236,6 +250,9 @@ func cmdServe(args []string) (result error) {
 			errc <- srv.ListenAndServeTLS(a.Cfg.CertPath(), a.Cfg.KeyPath())
 		case a.Cfg.BehindProxy():
 			log.Printf("ПК «Кафедра»: приём соединений HTTP на %s; шифрование выполняет внешний веб-сервер (external_url: %q, trusted_proxy: %q)", a.Cfg.Listen, a.Cfg.ExternalURL, a.Cfg.TrustedProxy)
+			if a.Cfg.TrustedProxy == "" {
+				log.Print("ВНИМАНИЕ: trusted_proxy не задан — адресом каждого пользователя считается адрес внешнего веб-сервера: в журнале событий адреса будут одинаковыми, а ограничение неудачных входов станет общим для всех. Укажите в trusted_proxy адрес веб-сервера и передавайте заголовок X-Real-IP.")
+			}
 			errc <- srv.ListenAndServe()
 		default:
 			log.Printf("ПК «Кафедра»: приём соединений HTTP на %s без шифрования. Если перед программой стоит веб-сервер с HTTPS, укажите в config.json external_url и trusted_proxy.", a.Cfg.Listen)

@@ -59,6 +59,29 @@
     syncTop();
   }
 
+  // Чат: периодическое обновление ленты сообщений.
+  var chat = document.getElementById('chat-list');
+  if (chat) {
+    chat.scrollTop = chat.scrollHeight;
+    var lastChat = chat.innerHTML;
+    var chatLoading = false;
+    setInterval(function () {
+      if (document.hidden || chatLoading) return;
+      chatLoading = true;
+      fetch(chat.getAttribute('data-src'), { credentials: 'same-origin' })
+        .then(function (r) { return r.ok && !r.redirected && r.headers.get('X-Kafedra-Fragment') === 'chat' ? r.text() : null; })
+        .then(function (html) {
+          if (html === null || html === lastChat) return;
+          var atBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 60;
+          lastChat = html;
+          chat.innerHTML = html;
+          if (atBottom) chat.scrollTop = chat.scrollHeight;
+        })
+        .catch(function () {})
+        .finally(function () { chatLoading = false; });
+    }, 8000);
+  }
+
   // Подтверждение необратимых действий.
   document.addEventListener('submit', function (ev) {
     var msg = ev.target.getAttribute('data-confirm');

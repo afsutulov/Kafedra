@@ -1,0 +1,9 @@
+{{define "title"}}{{.Title}}{{end}}
+{{define "content"}}
+<h2>{{.Title}}</h2>
+<div class="alert alert-error">В файле найдены ошибки ({{len .Issues}}). Ни один вопрос не загружен: исправьте файл и загрузите его снова.</div>
+<div class="table-wrap"><table><thead><tr><th>Лист</th><th class="num">Строка</th><th>Тип ошибки</th><th>Описание</th></tr></thead><tbody>
+{{range .Issues}}<tr><td>{{if .Sheet}}{{.Sheet}}{{else}}—{{end}}</td><td class="num">{{if .Row}}{{.Row}}{{else}}—{{end}}</td><td>{{.Kind}}</td><td>{{.Text}}</td></tr>{{end}}
+</tbody></table></div>
+<p class="row"><a class="primary-btn link-btn" href="{{.Back}}">Вернуться к тесту</a><a class="ghost-btn link-btn" href="{{.Template}}">Скачать шаблон</a></p>
+{{end}}

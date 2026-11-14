@@ -119,23 +119,8 @@ func (c *Ctx) cards() []courseCard {
 
 // progressOf возвращает число выполненных и общее число опубликованных элементов курса.
 func (a *App) progressOf(userID, courseID string) (done, total int) {
-	seen := map[string]bool{}
-	for _, p := range a.Progress.Find(func(p *Progress) bool { return p.UserID == userID && p.CourseID == courseID }) {
-		seen[p.ItemID] = true
-	}
-	for _, at := range a.Attempts.Find(func(x *Attempt) bool { return x.UserID == userID && x.CourseID == courseID && x.Done }) {
-		seen[at.ItemID] = true
-	}
-	for _, s := range a.Subs.Find(func(x *Submission) bool { return x.UserID == userID && x.CourseID == courseID }) {
-		seen[s.ItemID] = true
-	}
-	for _, it := range a.courseItems(courseID, true) {
-		total++
-		if seen[it.ID] {
-			done++
-		}
-	}
-	return
+	state := a.courseCompletion(courseID, userID, time.Time{}, time.Time{})
+	return len(state.done[userID]), len(state.items)
 }
 
 func (c *Ctx) courseList() {
@@ -184,23 +169,9 @@ func (c *Ctx) courseView() {
 	switch tab {
 	case "news":
 		data["News"] = c.newsView(func(n *News) bool { return n.CourseID == co.ID }, 100)
-	case "talk":
-		posts := sortBy(c.Posts.Find(func(p *Post) bool { return p.CourseID == co.ID }), func(x, y *Post) bool { return x.Created.After(y.Created) })
-		if len(posts) > 200 {
-			posts = posts[:200]
-		}
-		type pv struct {
-			Post   Post
-			Author string
-			Role   string
-			Mine   bool
-		}
-		var out []pv
-		for _, p := range posts {
-			u, _ := c.Users.Get(p.AuthorID)
-			out = append(out, pv{p, c.userName(p.AuthorID), u.Role, p.AuthorID == c.User.ID})
-		}
-		data["Posts"] = out
+	case "talk": // прежняя вкладка «Обсуждение» — теперь чат курса в разделе «Общение»
+		http.Redirect(c.W, c.R, "/chat/c-"+co.ID, http.StatusSeeOther)
+		return
 	case "people":
 		var teachers []User
 		for _, id := range co.TeacherIDs {
@@ -217,12 +188,21 @@ func (c *Ctx) courseView() {
 				certs[ct.UserID] = ct
 			}
 			data["Certs"] = certs
+			apps := map[string]CertApplication{}
+			for _, ap := range c.CertApps.Find(func(x *CertApplication) bool { return x.CourseID == co.ID }) {
+				apps[ap.UserID] = ap
+			}
+			data["Apps"] = apps
+			data["QuestRequired"] = c.S().QuestRequired
+			data["MailOn"] = c.Cfg.SMTPAddr != "" && c.Cfg.SMTPFrom != ""
 			data["CanImport"] = c.User.Role == RoleAdmin || c.S().TeacherImport
 		}
 	default:
 		data["Tab"] = "materials"
 		done := map[string]string{}
+		var completion completionState
 		if !manage {
+			completion = c.courseCompletion(co.ID, c.User.ID, time.Time{}, time.Time{})
 			for _, p := range c.Progress.Find(func(p *Progress) bool { return p.UserID == c.User.ID && p.CourseID == co.ID }) {
 				done[p.ItemID] = "изучено"
 			}
@@ -244,7 +224,7 @@ func (c *Ctx) courseView() {
 			if !found {
 				sid = ""
 			}
-			bySec[sid] = append(bySec[sid], itemRow{Item: it, Status: done[it.ID], Done: done[it.ID] != ""})
+			bySec[sid] = append(bySec[sid], itemRow{Item: it, Status: done[it.ID], Done: completion.done[c.User.ID][it.ID]})
 		}
 		var views []sectionView
 		for _, s := range co.Sections {
@@ -256,11 +236,25 @@ func (c *Ctx) courseView() {
 		data["Sections"] = views
 		data["Desc"] = template.HTML(content.Render(co.Description))
 		if !manage {
-			d, t := c.progressOf(c.User.ID, co.ID)
+			d, t := len(completion.done[c.User.ID]), len(completion.items)
 			data["Done"], data["Total"] = d, t
-			data["Completed"] = t > 0 && d == t && c.completed(c.User.ID, co.ID)
+			data["Completed"] = t > 0 && d == t
 			if ct, ok := c.Certs.First(func(x *Certificate) bool { return x.UserID == c.User.ID && x.CourseID == co.ID }); ok {
 				data["Cert"] = ct
+			}
+			if ap, ok := c.CertApps.Get(co.ID + ":" + c.User.ID); ok {
+				data["App"] = ap
+			}
+			data["NeedApp"] = c.S().CertNeedsApp
+			data["CertUnavailable"] = strings.TrimSpace(c.Cfg.OrgName) == "" || c.teacherNames(co) == ""
+			if data["Completed"] == true {
+				_, _, fontErr := c.certFont()
+				data["HasPDF"] = fontErr == nil
+				data["AppReady"] = c.applicationReady(co.ID, false)
+			}
+			data["MailTo"] = ""
+			if c.Cfg.SMTPAddr != "" && c.Cfg.SMTPFrom != "" {
+				data["MailTo"] = c.User.Email
 			}
 		}
 	}
@@ -351,8 +345,11 @@ func (c *Ctx) courseDelete() {
 	for _, x := range c.NewsC.Find(func(x *News) bool { return x.CourseID == co.ID }) {
 		c.NewsC.Delete(x.ID)
 	}
-	for _, x := range c.Posts.Find(func(x *Post) bool { return x.CourseID == co.ID }) {
-		c.Posts.Delete(x.ID)
+	c.dropChat(func(x *Post) bool { return x.CourseID == co.ID }, "c-"+co.ID)
+	for _, x := range c.CertApps.Find(func(x *CertApplication) bool { return x.CourseID == co.ID }) {
+		if c.CertApps.Delete(x.ID) == nil {
+			c.removeFile(x.FileID)
+		}
 	}
 	c.Courses.Delete(co.ID)
 	c.Log("удаление курса", co.Title, true, "")
@@ -404,7 +401,7 @@ func (c *Ctx) itemCreate() {
 		Created: time.Now(), Updated: time.Now()}
 	switch kind {
 	case KindTest:
-		it.MaxPoints, it.MaxAttempts, it.PassPercent, it.Shuffle, it.ShowAnswers = 10, 1, 50, true, true
+		it.MaxPoints, it.MaxAttempts, it.PassPercent, it.Shuffle, it.ShowAnswers, it.HidePoints = 10, 1, 50, true, true, true
 	case KindTask:
 		it.MaxPoints = 10
 	}
@@ -530,6 +527,11 @@ func (c *Ctx) itemSave() {
 		c.Redirect(back, "!Название не может быть пустым.")
 		return
 	}
+	if it.Kind == KindTask && atof(c.F("max_points"), 10, 0, 1000) != it.MaxPoints &&
+		c.Subs.Count(func(s *Submission) bool { return s.ItemID == it.ID && s.Graded }) > 0 {
+		c.Redirect(back, "!Максимум баллов нельзя изменить после оценивания работ; создайте новое задание.")
+		return
+	}
 	if it.Kind == KindTest {
 		points := atof(c.F("max_points"), 10, 0, 1000)
 		if err := c.preserveAttemptGrading(it, points); err != nil {
@@ -604,7 +606,7 @@ func (c *Ctx) itemSave() {
 			x.MaxAttempts = atoi(c.F("max_attempts"), 1, 0, 100)
 			x.PoolSize = atoi(c.F("pool_size"), 0, 0, 1000)
 			x.PassPercent = atoi(c.F("pass_percent"), 50, 0, 100)
-			x.Shuffle, x.ShowAnswers = c.F("shuffle") == "1", c.F("show_answers") == "1"
+			x.Shuffle, x.ShowAnswers, x.HidePoints = c.F("shuffle") == "1", c.F("show_answers") == "1", c.F("hide_points") == "1"
 			if x.Visible && len(x.Questions) == 0 {
 				x.Visible = false
 				notes = append(notes, "тест без вопросов не может быть опубликован")
@@ -921,6 +923,12 @@ func (c *Ctx) fileServe() {
 		if co, ok := c.Courses.Get(m.CourseID); ok {
 			allowed = c.canManage(&co) || (m.OwnerID == c.User.ID && c.canView(&co))
 		}
+	case "application":
+		co, ok := c.Courses.Get(m.CourseID)
+		ap, uploaded := c.CertApps.Get(m.CourseID + ":" + m.OwnerID)
+		allowed = ok && uploaded && ap.FileID == m.ID && (c.canManage(&co) || (m.OwnerID == c.User.ID && c.canView(&co)))
+	case "chat":
+		allowed = c.canReadChatFile(m)
 	case "pf":
 		if m.OwnerID == c.User.ID {
 			allowed = true
@@ -940,7 +948,7 @@ func (c *Ctx) fileServe() {
 	defer f.Close()
 	h := c.W.Header()
 	ct, inline := mimeTypes[m.Ext]
-	if !inline || c.R.URL.Query().Get("dl") == "1" {
+	if !inline || c.R.URL.Query().Get("dl") == "1" || (m.Ext == "pdf" && (m.Scope == "chat" || m.Scope == "application")) {
 		ct, inline = "application/octet-stream", false
 	}
 	disp := "attachment"
@@ -1024,36 +1032,19 @@ func (c *Ctx) newsDelete() {
 	c.Redirect(c.Back("/"), "Объявление удалено.")
 }
 
+// postCreate и postDelete — прежние адреса обсуждения курса; работа передана чату курса.
 func (c *Ctx) postCreate() {
-	co, ok := c.course(c.R.PathValue("id"), false)
-	if !ok {
-		return
-	}
-	body := c.F("body")
-	if body == "" || len(body) > 5000 {
-		c.Redirect("/courses/"+co.ID+"?tab=talk", "!Сообщение пустое или слишком длинное.")
-		return
-	}
-	pid := secure.NewID()
-	c.Posts.Put(pid, Post{ID: pid, CourseID: co.ID, AuthorID: c.User.ID, Body: body, Created: time.Now()})
-	c.Redirect("/courses/"+co.ID+"?tab=talk", "")
+	c.R.SetPathValue("room", "c-"+c.R.PathValue("id"))
+	c.chatPost()
 }
 
 func (c *Ctx) postDelete() {
-	id := c.R.PathValue("id")
-	p, ok := c.Posts.Get(id)
-	if !ok {
-		c.Redirect("/", "")
-		return
-	}
-	co, ok := c.course(p.CourseID, false)
-	if !ok {
-		return
-	}
-	if p.AuthorID != c.User.ID && !c.canManage(co) {
+	p, ok := c.Posts.Get(c.R.PathValue("id"))
+	if !ok || p.CourseID == "" {
 		c.Deny()
 		return
 	}
-	c.Posts.Delete(id)
-	c.Redirect("/courses/"+co.ID+"?tab=talk", "Сообщение удалено.")
+	c.R.SetPathValue("room", "c-"+p.CourseID)
+	c.R.Form.Set("id", p.ID)
+	c.chatDelete()
 }

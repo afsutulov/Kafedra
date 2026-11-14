@@ -12,26 +12,29 @@ const (
 
 // User — учётная запись.
 type User struct {
-	ID          string
-	Login       string
-	FullName    string
-	Email       string
-	Role        string
-	GroupID     string // для учащихся
-	PassHash    string
-	PassHistory []string
-	PassChanged time.Time
-	MustChange  bool
-	Disabled    bool
-	Failed      int
-	LockedUntil time.Time
-	TOTPSecret  string // зашифрован мастер-ключом
-	TOTPEnabled bool
-	TOTPStep    int64
-	Consent     time.Time // дата согласия с правилами обработки персональных данных
-	Created     time.Time
-	LastLogin   time.Time
-	LastIP      string
+	ID            string
+	Login         string
+	FullName      string
+	Email         string
+	Role          string
+	GroupID       string // для учащихся
+	PassHash      string
+	PassHistory   []string
+	PassChanged   time.Time
+	MustChange    bool
+	Disabled      bool
+	Failed        int
+	LockedUntil   time.Time
+	TOTPSecret    string // зашифрован мастер-ключом
+	TOTPEnabled   bool
+	TOTPStep      int64
+	QuestSent     time.Time `json:",omitempty"` // учащийся отметил, что отправил анкету
+	QuestApproved time.Time `json:",omitempty"` // анкета проверена, доступ к обучению открыт
+	QuestBy       string    `json:",omitempty"`
+	Consent       time.Time // дата согласия с правилами обработки персональных данных
+	Created       time.Time
+	LastLogin     time.Time
+	LastIP        string
 }
 
 // Group — учебная группа.
@@ -110,6 +113,7 @@ type Item struct {
 	PoolSize    int // сколько вопросов выдавать из банка, 0 — все
 	PassPercent int
 	ShowAnswers bool
+	HidePoints  bool `json:",omitempty"` // «Скрывать баллы во время прохождения»: учащийся видит только «Вопрос N из M»
 	Questions   []Question
 }
 
@@ -214,28 +218,58 @@ type News struct {
 }
 
 // Post — сообщение в обсуждении курса.
+// Post — сообщение чата. Чат курса: CourseID задан; чат учебной группы: задан GroupID.
 type Post struct {
 	ID       string
 	CourseID string
+	GroupID  string `json:",omitempty"`
 	AuthorID string
 	Body     string
+	FileID   string `json:",omitempty"` // вложение (изображение, PDF, DOCX)
 	Created  time.Time
+}
+
+// ChatBan — исключение участника из чата модератором. ID = комната + ":" + UserID.
+type ChatBan struct {
+	ID     string
+	Room   string
+	UserID string
+	By     string
+	At     time.Time
 }
 
 // Certificate — выданный сертификат о прохождении курса. Сведения фиксируются на момент выдачи.
 type Certificate struct {
-	ID          string
-	Number      string
-	UserID      string
-	CourseID    string
-	StudentName string
-	CourseTitle string
-	OrgName     string
-	Teachers    string
-	Percent     float64
-	Issued      time.Time
-	PDFFileID   string `json:",omitempty"`
-	PDFHash     string `json:",omitempty"`
+	ID           string
+	Number       string
+	UserID       string
+	CourseID     string
+	StudentName  string
+	CourseTitle  string
+	OrgName      string
+	Teachers     string
+	Percent      float64
+	Issued       time.Time
+	Mailed       time.Time `json:",omitempty"` // когда сертификат отправлен учащемуся по электронной почте
+	MailTo       string    `json:",omitempty"`
+	MailNext     time.Time `json:",omitempty"`
+	MailAttempts int       `json:",omitempty"`
+	MailRevision uint64    `json:",omitempty"` // generation of a manually requeued delivery
+	MailFailed   bool      `json:",omitempty"`
+	PDFFileID    string    `json:",omitempty"`
+	PDFHash      string    `json:",omitempty"`
+}
+
+// CertApplication — загруженный учащимся скан подписанного заявления на сертификат. ID = CourseID + ":" + UserID.
+type CertApplication struct {
+	ID         string
+	CourseID   string
+	UserID     string
+	FileID     string
+	Uploaded   time.Time
+	Decision   string    `json:",omitempty"`
+	ReviewedBy string    `json:",omitempty"`
+	Reviewed   time.Time `json:",omitempty"`
 }
 
 // PortfolioEntry — запись электронного портфолио учащегося.
@@ -306,6 +340,7 @@ type Settings struct {
 	PwMaxAgeDays   int    `json:"password_max_age_days"`
 	LockAttempts   int    `json:"lock_after_failed_attempts"`
 	LockMinutes    int    `json:"lock_minutes"`
+	IPFailLimit    int    `json:"login_failures_per_address"` // неудачных попыток входа с одного адреса за 10 минут до временного отказа
 	IdleMinutes    int    `json:"session_idle_minutes"`
 	SessionHours   int    `json:"session_max_hours"`
 	MaxSessions    int    `json:"max_sessions_per_user"`
@@ -318,20 +353,24 @@ type Settings struct {
 	AllowedExt     string `json:"allowed_extensions"`
 	MaxUploadMB    int    `json:"max_upload_mb"`
 	Banner         string `json:"login_banner"`
-	TeacherImport  bool   `json:"teachers_import_students"` // преподаватели могут добавлять учащихся из Excel
-	TeacherCourses bool   `json:"teachers_create_courses"`  // преподаватели могут создавать курсы сами
+	ChatMaxFileMB  int    `json:"chat_max_file_mb"`                 // предельный размер вложения в чате, МБ
+	QuestRequired  bool   `json:"questionnaire_required"`           // до проверки анкеты учащийся не допускается к материалам
+	QuestEmail     string `json:"questionnaire_email"`              // адрес, на который учащиеся отправляют анкету
+	CertNeedsApp   bool   `json:"certificate_requires_application"` // сертификат выдаётся после загрузки подписанного заявления
+	TeacherImport  bool   `json:"teachers_import_students"`         // преподаватели могут добавлять учащихся из Excel
+	TeacherCourses bool   `json:"teachers_create_courses"`          // преподаватели могут создавать курсы сами
 }
 
 // DefaultSettings возвращает безопасные значения по умолчанию.
 func DefaultSettings() Settings {
 	return Settings{
 		PwMinLen: 12, PwUpper: true, PwLower: true, PwDigit: true, PwSymbol: true,
-		PwHistory: 5, PwMaxAgeDays: 90, LockAttempts: 5, LockMinutes: 15,
+		PwHistory: 5, PwMaxAgeDays: 90, LockAttempts: 5, LockMinutes: 15, IPFailLimit: 100,
 		IdleMinutes: 30, SessionHours: 12, MaxSessions: 3, MFARoles: "none", TOTPSkew: 1,
 		Grade5: 85, Grade4: 70, Grade3: 50, RatingNames: false,
 		AllowedExt:     "pdf docx doc pptx ppt xlsx xls odt odp ods txt md csv png jpg jpeg gif webp mp4 webm mp3 ogg zip 7z html go py c cpp h java js ts sql json xml ipynb",
 		MaxUploadMB:    200,
 		Banner:         "Доступ разрешён только зарегистрированным пользователям. Действия в системе регистрируются.",
-		TeacherCourses: true, TeacherImport: true,
+		TeacherCourses: true, TeacherImport: true, CertNeedsApp: true, QuestRequired: true, ChatMaxFileMB: 10,
 	}
 }

@@ -1,0 +1,27 @@
+{{define "title"}}Анкета{{end}}
+{{define "content"}}
+<h2>Анкета слушателя</h2>
+{{if eq .Me.Role "student"}}
+  {{if not (zero .Me.QuestApproved)}}
+    <div class="alert alert-ok">Анкета проверена {{date .Me.QuestApproved}}. Доступ к обучению открыт.</div>
+    <p><a class="primary-btn link-btn" href="/courses">Перейти к курсам</a></p>
+  {{else}}
+    {{if .Required}}<div class="alert alert-info">Доступ к учебным материалам откроется после проверки анкеты.</div>{{end}}
+    <div class="glass-subcard">
+      <p><strong>Шаг 1.</strong> Скачайте и заполните анкету.</p>
+      <p class="row">{{if .HasPDF}}<a class="primary-btn link-btn" href="/docs/anketa.pdf">Скачать анкету (PDF)</a>{{end}}<a class="ghost-btn link-btn" href="/docs/anketa.docx">Анкета для заполнения на компьютере (.docx)</a></p>
+      <p><strong>Шаг 2.</strong> Заполненную анкету направьте на электронную почту: {{if .Address}}<a href="mailto:{{.Address}}"><strong>{{.Address}}</strong></a>{{else}}<strong>адрес уточните у куратора группы</strong>{{end}}</p>
+      <p class="note">Согласие на обработку персональных данных — отдельный бланк: <a href="/docs/soglasie.docx">скачать (.docx)</a>. Порядок его передачи определяет организация.</p>
+      <p><strong>Шаг 3.</strong> Отметьте отправку.</p>
+      {{if zero .Me.QuestSent}}
+      <form method="post" action="/questionnaire" data-confirm="Подтвердите: анкета отправлена на указанный адрес.">{{template "csrf" .}}<button class="soft-btn" type="submit">Анкета отправлена</button></form>
+      {{else}}
+      <p><span class="tag ok">Анкета отправлена — отмечено {{dt .Me.QuestSent}}</span></p>
+      <p class="muted">Ожидается проверка. Когда доступ откроют, вы получите уведомление на портале.</p>
+      {{end}}
+    </div>
+  {{end}}
+{{else}}
+  <p class="muted">Страница предназначена для учащихся. Администратор открывает доступ после проверки анкеты.</p>
+{{end}}
+{{end}}

@@ -6,12 +6,28 @@
   {{if .Course.Description}}<div class="prose">{{.Desc}}</div>{{end}}
   {{if .Total}}<p><progress max="{{.Total}}" value="{{.Done}}"></progress><span class="muted">Выполнено {{.Done}} из {{.Total}}</span></p>{{end}}
   {{if or .Completed .Cert}}
-  <div class="alert alert-ok">{{if .Completed}}<strong>Обучение по курсу завершено.</strong> Все разделы пройдены.{{else}}<strong>Ранее выданный сертификат</strong>{{end}}
-    <div class="row cert-actions">
-      {{if .Completed}}<a class="ghost-btn link-btn" href="/courses/{{.Course.ID}}/zayavlenie.docx">Заявление на выдачу сертификата (.docx)</a>{{end}}
-      {{if .Cert}}<a class="primary-btn link-btn" href="/certificates/{{.Cert.ID}}">Сертификат № {{.Cert.Number}} (PDF)</a>
-      {{else}}<form method="post" action="/courses/{{.Course.ID}}/certificate" class="inline">{{template "csrf" .}}<button class="primary-btn" type="submit">Получить сертификат (PDF)</button></form>{{end}}
-    </div>
+  <div class="glass-subcard docs-block">
+    <h3>Получение документов</h3>
+    {{if .Completed}}<p><span class="tag ok">Обучение завершено</span> Все обязательные задания курса выполнены.</p>{{end}}
+    {{if and .CertUnavailable (not .Cert)}}<p class="alert alert-error">Сертификаты по этому курсу пока не выдаются: в настройках сервера не указана организация либо курсу не назначен преподаватель. Сообщите администратору.</p>{{end}}
+    {{if .Cert}}
+      <p><a class="primary-btn link-btn" href="/certificates/{{.Cert.ID}}">Сертификат № {{.Cert.Number}} (PDF)</a></p>
+      <p class="note">Выдан {{date .Cert.Issued}}.{{if not (zero .Cert.Mailed)}} Отправлен на {{.Cert.MailTo}} {{dt .Cert.Mailed}}.{{else if .Cert.MailFailed}} Отправить письмо не удалось. PDF доступен по ссылке выше.{{else if .Cert.MailTo}} Письмо ожидает отправки.{{end}}</p>
+      {{if and .MailTo (canRetryMail .Cert .MailTo)}}<form method="post" action="/certificates/{{.Cert.ID}}/mail" class="row">{{template "csrf" .}}<button class="ghost-btn small" type="submit">Отправить сертификат на {{.MailTo}}</button></form>{{end}}
+    {{else}}
+      <p><strong>Шаг 1.</strong> Скачайте заявление на сертификат.</p>
+      <p class="row">{{if .HasPDF}}<a class="soft-btn link-btn" href="/courses/{{.Course.ID}}/zayavlenie.pdf">Скачать заявление на сертификат (PDF)</a>{{end}}<a class="ghost-btn link-btn" href="/courses/{{.Course.ID}}/zayavlenie.docx">Заявление (.docx)</a></p>
+      <p><strong>Шаг 2.</strong> Распечатайте, подпишите и загрузите скан/фото заявления в форму ниже для сверки данных.</p>
+      {{if .App}}<p>{{if eq .App.Decision "approve"}}<span class="tag ok">Заявление проверено</span>{{else if eq .App.Decision "reject"}}<span class="tag warn">Загрузите заявление повторно</span>{{else}}<span class="tag">Ожидает сверки</span>{{end}} <a href="/files/{{.App.FileID}}">Открыть файл</a>.</p>{{end}}
+      <form method="post" action="/courses/{{.Course.ID}}/application" enctype="multipart/form-data" class="row">{{template "csrf" .}}
+        <input type="file" name="file" accept=".pdf,.jpg,.jpeg,.png" required aria-label="Скан или фотография заявления">
+        <button class="soft-btn" type="submit">Загрузить заявление</button>
+      </form>
+      <p class="note">Принимаются PDF, JPG или PNG размером до 20 МБ.</p>
+      <p><strong>Шаг 3.</strong> Получите сертификат.{{if .MailTo}} Он также будет отправлен на адрес {{.MailTo}}.{{end}}</p>
+      {{if and .NeedApp (not .AppReady)}}<p class="muted">Сертификат станет доступен после загрузки и сверки заявления.</p>
+      {{else}}<form method="post" action="/courses/{{.Course.ID}}/certificate">{{template "csrf" .}}<button class="primary-btn" type="submit">Получить сертификат (PDF)</button></form>{{end}}
+    {{end}}
   </div>
   {{end}}
   {{range .Sections}}{{$sec := .Section}}
@@ -23,7 +39,7 @@
       <a class="title" href="/items/{{.Item.ID}}">{{.Item.Title}}</a>
       {{if not .Item.Visible}}<span class="tag">черновик</span>{{end}}
       {{if not (zero .Item.CloseAt)}}<span class="muted">до {{dt .Item.CloseAt}}</span>{{end}}
-      {{if .Status}}<span class="tag ok">{{.Status}}</span>{{end}}
+      {{if .Status}}<span class="tag {{if .Done}}ok{{else}}warn{{end}}">{{.Status}}</span>{{end}}
       {{if $.Manage}}
       <form method="post" action="/items/{{.Item.ID}}/move" class="inline">{{template "csrf" $}}<input type="hidden" name="dir" value="up"><button class="ghost-btn small" type="submit" title="Выше" aria-label="Переместить выше">↑</button></form>
       <form method="post" action="/items/{{.Item.ID}}/move" class="inline">{{template "csrf" $}}<input type="hidden" name="dir" value="down"><button class="ghost-btn small" type="submit" title="Ниже" aria-label="Переместить ниже">↓</button></form>
@@ -76,19 +92,6 @@
   {{end}}
 {{end}}
 
-{{if eq .Tab "talk"}}
-  <form method="post" action="/courses/{{.Course.ID}}/posts" class="stack-form glass-subcard">{{template "csrf" .}}
-    <label>Вопрос или сообщение участникам курса<textarea name="body" required maxlength="5000"></textarea></label>
-    <div class="row"><button class="primary-btn" type="submit">Отправить</button></div>
-  </form>
-  {{range .Posts}}
-  <div class="post"><div class="post-head"><span><strong>{{.Author}}</strong>{{if ne .Role "student"}} <span class="tag">{{role .Role}}</span>{{end}}</span><span class="muted">{{dt .Post.Created}}</span></div>
-    <div class="body">{{.Post.Body}}</div>
-    {{if or .Mine $.Manage}}<form method="post" action="/posts/{{.Post.ID}}/delete" data-confirm="Удалить сообщение?">{{template "csrf" $}}<button class="danger-btn small" type="submit">Удалить</button></form>{{end}}
-  </div>
-  {{else}}<p class="muted">Сообщений пока нет.</p>{{end}}
-{{end}}
-
 {{if eq .Tab "people"}}
   <h3>Преподаватели</h3>
   <ul>{{range .Teachers}}<li>{{.FullName}}{{if .Email}} — <a href="mailto:{{.Email}}">{{.Email}}</a>{{end}}</li>{{else}}<li class="muted">не назначены</li>{{end}}</ul>
@@ -97,19 +100,41 @@
   {{if .CanImport}}
   <details><summary>Добавить группу учащихся из Excel</summary>
   <form method="post" action="/courses/{{.Course.ID}}/students/import" enctype="multipart/form-data" class="stack-form">{{template "csrf" .}}
-    <p>1. <a href="/templates/students.xlsx">Скачайте шаблон (.xlsx)</a> и внесите в него список группы: одна строка — один учащийся.<br>2. Укажите название группы и загрузите заполненный файл.<br>3. В ответ скачается файл с логинами и временными паролями — раздайте их учащимся. После этого обновите страницу.</p>
+    <p>1. Скачайте шаблон <a href="/templates/users.xlsx">XLSX</a> или <a href="/templates/users.csv">CSV</a> и внесите в него список группы: одна строка — один учащийся. Обязательны Email, фамилия, имя и роль «Учащийся».<br>2. Укажите название группы и загрузите заполненный файл.<br>3. В ответ скачается файл с логинами и временными паролями — раздайте их учащимся. После этого обновите страницу.</p>
     <div class="form-grid">
       <label>Название группы<input type="text" name="group" required maxlength="60" placeholder="например, ПИ-21"></label>
-      <label>Заполненный шаблон<input type="file" name="file" accept=".xlsx" required></label>
+      <label>Заполненный шаблон<input type="file" name="file" accept=".xlsx,.csv" required></label>
     </div>
-    <p class="note">Если группы с таким названием ещё нет, она будет создана и назначена этому курсу. Пополнять можно только группы своих курсов.</p>
+    <p class="note">Если группы с таким названием ещё нет, она будет создана и назначена этому курсу. Пополнять можно только группы, назначенные этому курсу.</p>
     <div class="row"><button class="soft-btn" type="submit">Создать учётные записи</button></div>
   </form></details>
   {{end}}
-  <div class="table-wrap"><table><thead><tr><th>ФИО</th><th>Группа</th><th>Последний вход</th><th>Сертификат</th><th></th></tr></thead><tbody>
-  {{range .Students}}{{$ct := index $.Certs .ID}}<tr><td>{{.FullName}}</td><td>{{index $.GroupNames .GroupID}}</td><td>{{dt .LastLogin}}</td>
-    <td>{{if $ct.ID}}<a href="/certificates/{{$ct.ID}}">№ {{$ct.Number}}</a> <span class="muted">{{date $ct.Issued}}</span>{{end}}</td><td><a href="/portfolio?user={{.ID}}">Портфолио</a></td></tr>
-  {{else}}<tr><td colspan="5" class="muted">Курсу не назначены группы либо в группах нет учащихся.</td></tr>{{end}}
+  {{if and .QuestRequired (eq .Me.Role "admin")}}
+  <div class="row">
+    <form method="post" action="/courses/{{.Course.ID}}/questionnaire">{{template "csrf" .}}<button class="soft-btn" type="submit">Открыть доступ всем, кто отметил отправку анкеты</button></form>
+    <form method="post" action="/courses/{{.Course.ID}}/questionnaire" data-confirm="Открыть доступ всем учащимся курса без проверки анкет?">{{template "csrf" .}}<input type="hidden" name="scope" value="all"><button class="ghost-btn" type="submit">Открыть доступ всем учащимся курса</button></form>
+  </div>
+  <p class="note">Вторая кнопка — для тех, кто уже обучался до включения анкеты.</p>
+  {{end}}
+  <div class="table-wrap"><table class="compact"><thead><tr><th>ФИО</th><th>Группа</th><th>Последний вход</th>{{if .QuestRequired}}<th>Анкета и доступ</th>{{end}}<th>Заявление</th><th>Сертификат</th><th></th></tr></thead><tbody>
+  {{range .Students}}{{$ct := index $.Certs .ID}}{{$ap := index $.Apps .ID}}<tr><td>{{.FullName}}{{if .Email}}<br><span class="muted">{{.Email}}</span>{{end}}</td><td>{{index $.GroupNames .GroupID}}</td><td>{{dt .LastLogin}}</td>
+    {{if $.QuestRequired}}<td>{{if not (zero .QuestApproved)}}<span class="tag ok">доступ открыт</span>
+      {{if eq $.Me.Role "admin"}}<form method="post" action="/users/{{.ID}}/questionnaire" class="inline">{{template "csrf" $}}<input type="hidden" name="action" value="revoke"><button class="ghost-btn small" type="submit">Закрыть</button></form>{{end}}
+      {{else}}{{if zero .QuestSent}}<span class="tag">анкета не отправлена</span>{{else}}<span class="tag warn">отправлена {{date .QuestSent}}</span>{{end}}
+      {{if eq $.Me.Role "admin"}}<form method="post" action="/users/{{.ID}}/questionnaire" class="inline">{{template "csrf" $}}<input type="hidden" name="action" value="approve"><button class="soft-btn small" type="submit">Открыть доступ</button></form>{{end}}{{end}}</td>{{end}}
+    <td>{{if $ap.FileID}}<a href="/files/{{$ap.FileID}}">скан</a> <span class="muted">{{date $ap.Uploaded}}</span>
+      {{if eq $ap.Decision "approve"}}<span class="tag ok">проверено</span>{{else if eq $ap.Decision "reject"}}<span class="tag warn">возвращено</span>{{end}}
+      {{if not $ct.ID}}<form method="post" action="/courses/{{$.Course.ID}}/application/decision" class="row">{{template "csrf" $}}
+        <input type="hidden" name="user" value="{{.ID}}"><input type="hidden" name="file" value="{{$ap.FileID}}">
+        <button name="action" value="approve" class="soft-btn small" type="submit">Подтвердить сверку</button><button name="action" value="reject" class="ghost-btn small" type="submit">Вернуть</button>
+      </form>{{end}}{{end}}</td>
+    <td>{{if $ct.ID}}<a href="/certificates/{{$ct.ID}}">сертификат</a> <span class="muted">{{date $ct.Issued}}</span>
+      {{if not (zero $ct.Mailed)}}<br><span class="muted">письмо отправлено на {{$ct.MailTo}} {{date $ct.Mailed}}</span>
+      {{else if $.MailOn}}<br><span class="muted">{{if $ct.MailFailed}}письмо не отправлено{{else if $ct.MailTo}}письмо в очереди{{else}}письмо не отправлялось{{end}}</span>
+      {{end}}
+      {{if and $.MailOn (canRetryMail $ct .Email)}}<form method="post" action="/certificates/{{$ct.ID}}/mail" class="inline">{{template "csrf" $}}<button class="ghost-btn small" type="submit">Отправить на {{.Email}}</button></form>{{end}}
+      {{end}}</td><td><a href="/portfolio?user={{.ID}}">Портфолио</a></td></tr>
+  {{else}}<tr><td colspan="7" class="muted">Курсу не назначены группы либо в группах нет учащихся.</td></tr>{{end}}
   </tbody></table></div>
   {{end}}
 {{end}}

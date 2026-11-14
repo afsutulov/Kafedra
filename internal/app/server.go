@@ -51,11 +51,14 @@ type App struct {
 	Posts               *store.Coll[Post]
 	Portfolio           *store.Coll[PortfolioEntry]
 	Certs               *store.Coll[Certificate]
+	CertApps            *store.Coll[CertApplication]
+	ChatBans            *store.Coll[ChatBan]
 	Progress            *store.Coll[Progress]
 	Notices             *store.Coll[Notice]
 	Sessions            *store.Coll[Session]
 	Files               *store.Coll[FileMeta]
 	setMu               sync.RWMutex
+	mailWake            chan struct{}
 	importSlot          chan struct{}
 	attemptQueueMu      sync.Mutex
 	attemptQueue        map[string]int
@@ -94,6 +97,7 @@ func New(cfg Config, version string) (a *App, err error) {
 	}
 	if cfg.Settings.PwMinLen == 0 { // конфигурация создана в коде без раздела settings
 		cfg.Settings = DefaultSettings()
+		cfg.Settings.QuestRequired, cfg.Settings.CertNeedsApp = false, false
 	}
 	loc, err := time.LoadLocation(cfg.Timezone)
 	if err != nil {
@@ -141,7 +145,7 @@ func New(cfg Config, version string) (a *App, err error) {
 	if err != nil {
 		return nil, err
 	}
-	a = &App{Cfg: cfg, Version: version, DB: db, Keys: keys, Audit: audit, Loc: loc, started: time.Now(), lim: map[string][]time.Time{}, importSlot: make(chan struct{}, 1), attemptQueue: map[string]int{}}
+	a = &App{Cfg: cfg, Version: version, DB: db, Keys: keys, Audit: audit, Loc: loc, started: time.Now(), lim: map[string][]time.Time{}, importSlot: make(chan struct{}, 1), mailWake: make(chan struct{}, 1), attemptQueue: map[string]int{}}
 	a.registerCollections(db)
 	for _, w := range db.Warnings {
 		a.Audit.Log(secure.AuditRecord{Event: "хранилище: восстановление после сбоя", Detail: w, OK: true})
@@ -176,6 +180,8 @@ func (a *App) registerCollections(db *store.DB) {
 	a.Posts = must(store.Register[Post](db, "posts"))
 	a.Portfolio = must(store.Register[PortfolioEntry](db, "portfolio"))
 	a.Certs = must(store.Register[Certificate](db, "certificates"))
+	a.CertApps = must(store.Register[CertApplication](db, "cert_applications"))
+	a.ChatBans = must(store.Register[ChatBan](db, "chat_bans"))
 	a.Progress = must(store.Register[Progress](db, "progress"))
 	a.Notices = must(store.Register[Notice](db, "notices"))
 	a.Sessions = must(store.Register[Session](db, "sessions"))
@@ -211,16 +217,17 @@ func (a *App) SetSettings(s Settings) error {
 
 func (a *App) loadTemplates() error {
 	funcs := template.FuncMap{
-		"dt":      func(t time.Time) string { return fmtTime(t, a.Loc, "02.01.2006 15:04") },
-		"date":    func(t time.Time) string { return fmtTime(t, a.Loc, "02.01.2006") },
-		"clock":   func(t time.Time) string { return fmtTime(t, a.Loc, "15:04") },
-		"dtlocal": func(t time.Time) string { return fmtTime(t, a.Loc, "2006-01-02T15:04") },
-		"num":     fmtNum,
-		"size":    fmtSize,
-		"role":    roleName,
-		"kind":    kindName,
-		"evkind":  func(k string) string { return eventKinds[k] },
-		"has":     func(list []string, v string) bool { return contains(list, v) },
+		"canRetryMail": canRetryCertificateMail,
+		"dt":           func(t time.Time) string { return fmtTime(t, a.Loc, "02.01.2006 15:04") },
+		"date":         func(t time.Time) string { return fmtTime(t, a.Loc, "02.01.2006") },
+		"clock":        func(t time.Time) string { return fmtTime(t, a.Loc, "15:04") },
+		"dtlocal":      func(t time.Time) string { return fmtTime(t, a.Loc, "2006-01-02T15:04") },
+		"num":          fmtNum,
+		"size":         fmtSize,
+		"role":         roleName,
+		"kind":         kindName,
+		"evkind":       func(k string) string { return eventKinds[k] },
+		"has":          func(list []string, v string) bool { return contains(list, v) },
 		"hasInt": func(list []int, v int) bool {
 			for _, x := range list {
 				if x == v {
@@ -352,13 +359,13 @@ func (c *Ctx) nav() []navItem {
 	switch c.User.Role {
 	case RoleAdmin:
 		return []navItem{{"/", "Главная"}, {"/admin/users", "Пользователи"}, {"/admin/groups", "Группы"}, {"/courses", "Курсы"},
-			{"/schedule", "Расписание"}, {"/rating", "Рейтинг"}, {"/admin/settings", "Настройки"}, {"/admin/audit", "Журнал событий"},
+			{"/schedule", "Расписание"}, {"/chat", "Общение"}, {"/rating", "Рейтинг"}, {"/admin/settings", "Настройки"}, {"/admin/audit", "Журнал событий"},
 			{"/admin/system", "Система"}, {"/profile", "Профиль"}}
 	case RoleTeacher:
-		return []navItem{{"/", "Главная"}, {"/courses", "Мои курсы"}, {"/schedule", "Расписание"}, {"/rating", "Рейтинг"}, {"/profile", "Профиль"}}
+		return []navItem{{"/", "Главная"}, {"/courses", "Мои курсы"}, {"/schedule", "Расписание"}, {"/chat", "Общение"}, {"/rating", "Рейтинг"}, {"/profile", "Профиль"}}
 	}
 	return []navItem{{"/", "Главная"}, {"/courses", "Мои курсы"}, {"/schedule", "Расписание"}, {"/grades", "Оценки"},
-		{"/rating", "Рейтинг"}, {"/portfolio", "Портфолио"}, {"/profile", "Профиль"}}
+		{"/chat", "Общение"}, {"/rating", "Рейтинг"}, {"/portfolio", "Портфолио"}, {"/profile", "Профиль"}}
 }
 
 // Render выводит страницу name с данными data.
@@ -371,7 +378,9 @@ func (c *Ctx) Render(name string, data map[string]any) {
 	if data == nil {
 		data = map[string]any{}
 	}
-	data["Cfg"] = c.Cfg
+	data["Cfg"] = struct{ PortalName, OrgName, DataPath, AuditPath, LogPath, Timezone string }{
+		c.Cfg.PortalName, c.Cfg.OrgName, c.Cfg.DataPath(), c.Cfg.AuditPath(), c.Cfg.LogPath(), c.Cfg.Timezone,
+	}
 	data["Product"], data["Vendor"] = ProductName, Vendor
 	data["Version"] = c.Version
 	data["Path"] = c.R.URL.Path
@@ -525,6 +534,14 @@ func (a *App) wrap(roles string, big bool, h handler) http.HandlerFunc {
 		if big {
 			limit = int64(a.S().MaxUploadMB)<<20 + 1<<20
 		}
+		switch r.Pattern {
+		case "POST /chat/{room}":
+			limit = min(limit, int64(max(a.S().ChatMaxFileMB, 1)+1)<<20)
+		case "POST /courses/{id}/application":
+			limit = min(limit, 21<<20)
+		case "POST /items/{id}/questions/xlsx", "POST /admin/users/import", "POST /courses/{id}/students/import":
+			limit = min(limit, 9<<20)
+		}
 		r.Body = http.MaxBytesReader(w, r.Body, limit)
 		if r.Method == http.MethodPost {
 			if !a.sameOrigin(r) {
@@ -586,11 +603,15 @@ func (a *App) wrap(roles string, big bool, h handler) http.HandlerFunc {
 		case c.needsMFACode() && !free && p != "/mfa":
 			http.Redirect(w, r, "/mfa", http.StatusSeeOther)
 			return
-		case !c.needsMFACode() && (c.User.MustChange || c.User.Consent.IsZero() || c.passwordExpired()) && !free && p != "/password" && p != "/docs/anketa.docx" && p != "/docs/soglasie.docx":
+		case !c.needsMFACode() && (c.User.MustChange || c.User.Consent.IsZero() || c.passwordExpired()) && !free && p != "/password" && p != "/docs/anketa.docx" && p != "/docs/anketa.pdf" && p != "/docs/soglasie.docx":
 			http.Redirect(w, r, "/password", http.StatusSeeOther)
 			return
 		case !c.User.MustChange && c.mfaRequired() && !c.User.TOTPEnabled && !free && p != "/password" && !strings.HasPrefix(p, "/profile"):
 			c.Redirect("/profile", "!Для вашей роли обязательна двухфакторная аутентификация. Подключите её, чтобы продолжить работу.")
+			return
+		}
+		if c.questBlocked() && !free && !questFree(p) {
+			http.Redirect(w, r, "/questionnaire", http.StatusSeeOther)
 			return
 		}
 		if roles != authed && !contains(strings.Split(roles, ","), c.User.Role) {
@@ -606,6 +627,7 @@ func (a *App) wrap(roles string, big bool, h handler) http.HandlerFunc {
 // чтобы не задерживать сдачу тестов и работ другими пользователями.
 var selfLocking = map[string]bool{
 	"POST /login":                        true,
+	"POST /password":                     true,
 	"POST /admin/backup":                 true,
 	"POST /admin/users/import":           true,
 	"POST /courses/{id}/students/import": true,
@@ -620,7 +642,7 @@ func (c *Ctx) recheck(roles string) bool {
 	c.loadSession()
 	return c.User != nil && contains(strings.Split(roles, ","), c.User.Role) && !c.needsMFACode() &&
 		(!c.mfaRequired() || c.User.TOTPEnabled) && !c.User.MustChange &&
-		!c.User.Consent.IsZero() && !c.passwordExpired() && secure.Equal(c.F("csrf"), c.Sess.CSRF)
+		!c.User.Consent.IsZero() && !c.passwordExpired() && !c.questBlocked() && secure.Equal(c.F("csrf"), c.Sess.CSRF)
 }
 
 // sameOrigin проверяет, что запрос отправлен со страницы самого портала. За внешним веб-сервером
@@ -661,6 +683,7 @@ func (a *App) Handler() http.Handler {
 	})
 
 	g("/branding/logo", anyone, (*Ctx).logo)
+	g("/favicon.ico", anyone, (*Ctx).logo) // браузер запрашивает значок сам, например для вкладки с PDF
 	g("/login", anyone, (*Ctx).loginPage)
 	po("/login", anyone, (*Ctx).loginPost)
 	po("/logout", authed, (*Ctx).logout)
@@ -689,6 +712,12 @@ func (a *App) Handler() http.Handler {
 	po("/courses/{id}/news", staff, (*Ctx).newsCreate)
 	po("/courses/{id}/posts", authed, (*Ctx).postCreate)
 	po("/posts/{id}/delete", authed, (*Ctx).postDelete)
+	g("/chat", authed, (*Ctx).chatList)
+	g("/chat/{room}", authed, (*Ctx).chatView)
+	g("/chat/{room}/messages", authed, (*Ctx).chatFragment)
+	up("/chat/{room}", authed, (*Ctx).chatPost)
+	po("/chat/{room}/delete", authed, (*Ctx).chatDelete)
+	po("/chat/{room}/ban", staff, (*Ctx).chatBan)
 	g("/courses/{id}/journal", staff, (*Ctx).journal)
 	g("/courses/{id}/journal.csv", staff, (*Ctx).journalCSV)
 	g("/courses/{id}/journal.xlsx", staff, (*Ctx).journalXLSX)
@@ -696,6 +725,19 @@ func (a *App) Handler() http.Handler {
 	g("/templates/test.xlsx", staff, (*Ctx).templateTest)
 	up("/courses/{id}/students/import", staff, (*Ctx).studentsImport)
 	up("/items/{id}/questions/xlsx", staff, (*Ctx).questionImportXLSX)
+	g("/docs/anketa.pdf", authed, (*Ctx).docAnketaPDF)
+	g("/courses/{id}/zayavlenie.pdf", RoleStudent, (*Ctx).docZayavleniePDF)
+	up("/courses/{id}/application", RoleStudent, (*Ctx).applicationUpload)
+	g("/questionnaire", authed, (*Ctx).questPage)
+	po("/questionnaire", RoleStudent, (*Ctx).questSent)
+	po("/users/{id}/questionnaire", RoleAdmin, (*Ctx).questDecide)
+	po("/courses/{id}/questionnaire", RoleAdmin, (*Ctx).questApproveGroup)
+	po("/certificates/{id}/mail", authed, (*Ctx).certificateMailRetry)
+	po("/courses/{id}/application/decision", staff, (*Ctx).applicationDecision)
+	g("/courses/{id}/analytics", staff, (*Ctx).analyticsPage)
+	g("/courses/{id}/analytics.xlsx", staff, (*Ctx).analyticsXLSX)
+	g("/templates/users.xlsx", staff, (*Ctx).templateUsers)
+	g("/templates/users.csv", staff, (*Ctx).templateUsersCSV)
 	g("/docs/anketa.docx", authed, (*Ctx).docAnketa)
 	g("/docs/soglasie.docx", authed, (*Ctx).docSoglasie)
 	g("/courses/{id}/zayavlenie.docx", RoleStudent, (*Ctx).docZayavlenie)
@@ -855,6 +897,9 @@ func (a *App) BackupToFile(name string) error {
 		}
 		err = errors.Join(err, f.Close())
 		if err == nil {
+			if complete, known := backupCompleteness(name); incomplete && known && complete {
+				name = strings.TrimSuffix(name, ".zip") + "-incomplete-" + secure.NewID() + ".zip"
+			}
 			err = os.Rename(tmp, name)
 		}
 		if err == nil {
@@ -868,12 +913,10 @@ func (a *App) BackupToFile(name string) error {
 		rec.Detail = "копия неполная; ротация предыдущих копий пропущена"
 	}
 	a.Audit.Log(rec)
-	if old, _ := filepath.Glob(filepath.Join(a.Cfg.DataPath(), "backup", "kafedra-*.zip")); err == nil && !incomplete && a.Cfg.BackupKeep > 0 && len(old) > a.Cfg.BackupKeep {
-		sort.Strings(old)
-		for _, o := range old[:len(old)-a.Cfg.BackupKeep] {
-			os.Remove(o)
-		}
+	if err == nil && !incomplete {
+		a.rotateBackups()
 	}
+
 	return err
 }
 

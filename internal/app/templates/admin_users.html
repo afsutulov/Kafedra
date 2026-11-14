@@ -16,10 +16,11 @@
   <label class="full">Эл. почта<input type="email" name="email" maxlength="200"></label>
   <div class="full"><button class="primary-btn" type="submit">Создать</button> <span class="note">Временный пароль будет показан один раз; при первом входе пользователь обязан его сменить.</span></div>
 </form></details>
-<details><summary>Импорт списка из CSV</summary>
+<details><summary>Импорт пользователей из шаблона (XLSX или CSV)</summary>
 <form method="post" action="/admin/users/import" enctype="multipart/form-data" class="stack-form">{{template "csrf" .}}
-  <label>Файл CSV (UTF-8, разделитель «;»)<input type="file" name="file" accept=".csv,.txt" required></label>
-  <p class="note">Столбцы: <span class="mono">логин;ФИО;роль;группа;почта</span>. Роль: student, teacher или admin (пусто — учащийся). Отсутствующие группы создаются. В ответ выгружается файл с временными паролями — передайте их пользователям и удалите файл.</p>
+  <p>1. <a href="/templates/users.xlsx">Скачайте шаблон XLSX</a> или <a href="/templates/users.csv">CSV</a>. Обязательные поля: Email, фамилия, имя и роль «Учащийся» или «Преподаватель». Отчество — при наличии.<br>2. Загрузите заполненный файл. В ответ скачается файл с результатом по каждой строке и временными паролями.</p>
+  <label>Файл XLSX или CSV (разделитель «;» или «,»; кодировка UTF-8 или Windows-1251)<input type="file" name="file" accept=".xlsx,.csv" required></label>
+  <p class="note">Проверяются формат и повторы адресов электронной почты (в файле и среди существующих пользователей), заполнение обязательных полей. Строки с ошибками не создаются. Отсутствующие группы создаются. CSV прежнего вида <span class="mono">логин;ФИО;роль;группа;почта</span> тоже принимается.</p>
   <div class="row"><button class="soft-btn" type="submit">Импортировать</button></div>
 </form></details>
 <div class="table-wrap"><table><thead><tr><th>ФИО</th><th>Логин</th><th>Роль</th><th>Группа</th><th>Последний вход</th><th>Состояние</th></tr></thead><tbody>

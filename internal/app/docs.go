@@ -51,22 +51,35 @@ func (c *Ctx) sendXLSX(name string, sheets ...content.Sheet) {
 
 // readUploadXLSX читает первый лист загруженной книги (поле формы file).
 func (c *Ctx) readUploadXLSX() ([][]string, error) {
-	if c.R.MultipartForm == nil || len(c.R.MultipartForm.File["file"]) == 0 {
-		return nil, errors.New("выберите файл Excel (.xlsx)")
+	_, rows, err := c.readUploadXLSXNamed()
+	return rows, err
+}
+
+func (c *Ctx) readUploadXLSXNamed() (string, [][]string, error) {
+	name, rows, issues, err := c.readUploadXLSXReport()
+	if err == nil && len(issues) > 0 {
+		err = fmt.Errorf("строка %d: %s", issues[0].Row, issues[0].Text)
+	}
+	return name, rows, err
+}
+
+func (c *Ctx) readUploadXLSXReport() (string, [][]string, []content.XLSXIssue, error) {
+	if c.R.MultipartForm == nil || len(c.R.MultipartForm.File["file"]) != 1 {
+		return "", nil, nil, errors.New("выберите один файл Excel (.xlsx)")
 	}
 	fh := c.R.MultipartForm.File["file"][0]
 	if !strings.EqualFold(filepath.Ext(fh.Filename), ".xlsx") {
-		return nil, errors.New("нужен файл формата .xlsx (книга Excel); старый формат .xls сохраните как .xlsx")
+		return "", nil, nil, errors.New("нужен файл формата .xlsx (книга Excel); старый формат .xls сохраните как .xlsx")
 	}
 	if fh.Size > 8<<20 {
-		return nil, errors.New("файл слишком велик")
+		return "", nil, nil, errors.New("файл слишком велик")
 	}
 	f, err := fh.Open()
 	if err != nil {
-		return nil, err
+		return "", nil, nil, err
 	}
 	defer f.Close()
-	return content.ReadXLSX(f, fh.Size)
+	return content.ReadXLSXReport(f, fh.Size)
 }
 
 func cell(row []string, i int) string {
@@ -78,22 +91,8 @@ func cell(row []string, i int) string {
 
 // ---------- шаблоны Excel ----------
 
-func (c *Ctx) templateStudents() {
-	c.sendXLSX("Шаблон — список группы.xlsx",
-		content.Sheet{Name: "Группа", HeaderRows: 1, Widths: []float64{42, 22, 32}, Rows: [][]any{
-			{"ФИО", "Логин (необязательно)", "Эл. почта (необязательно)"},
-			{"Иванов Пётр Сергеевич", "", "ivanov@example.ru"},
-			{"Кузнецова Мария Олеговна", "kuznetsova", ""},
-		}},
-		content.Sheet{Name: "Как заполнять", Widths: []float64{110}, Rows: [][]any{
-			{"1. На листе «Группа» оставьте первую строку (заголовок) без изменений. Строки-примеры замените своими."},
-			{"2. В каждой строке — один учащийся. Обязательно только ФИО."},
-			{"3. Логин можно не указывать: он будет составлен из фамилии и инициалов (например, ivanov.ps)."},
-			{"4. Логин — латинские буквы, цифры, точка, дефис, подчёркивание; от 3 до 40 символов."},
-			{"5. Название группы вводится в форме загрузки на странице курса, а не в файле."},
-			{"6. После загрузки вы получите файл с логинами и временными паролями. Раздайте их учащимся и удалите файл."},
-		}})
-}
+// templateStudents — прежний адрес шаблона списка группы; выдаётся единый шаблон пользователей.
+func (c *Ctx) templateStudents() { c.templateUsers() }
 
 func (c *Ctx) templateTest() {
 	c.sendXLSX("Шаблон — вопросы теста.xlsx",
@@ -231,9 +230,13 @@ func (c *Ctx) bulkCreate(rows []importRow, roles, courseID string) (created int,
 	for _, g := range c.Groups.All() {
 		groups[strings.ToLower(g.Name)] = g.ID
 	}
+	emails := map[string]string{} // адрес → логин: повтор адреса среди пользователей не допускается
 	taken := map[string]bool{}
 	for _, u := range c.Users.All() {
 		taken[u.Login] = true
+		if u.Email != "" {
+			emails[strings.ToLower(u.Email)] = u.Login
+		}
 	}
 	for i := range rows {
 		r := &rows[i]
@@ -251,6 +254,12 @@ func (c *Ctx) bulkCreate(rows []importRow, roles, courseID string) (created int,
 			for n := 2; taken[r.Login]; n++ {
 				suffix := strconv.Itoa(n)
 				r.Login = base[:min(len(base), 40-len(suffix))] + suffix
+			}
+		}
+		if key := strings.ToLower(r.Email); key != "" {
+			if _, used := emails[key]; used {
+				r.Result = "ошибка: адрес электронной почты уже используется"
+				continue
 			}
 		}
 		if taken[r.Login] {
@@ -289,6 +298,9 @@ func (c *Ctx) bulkCreate(rows []importRow, roles, courseID string) (created int,
 			continue
 		}
 		taken[r.Login] = true
+		if r.Email != "" {
+			emails[strings.ToLower(r.Email)] = r.Login
+		}
 		r.Created, r.Result = true, "создан"
 		created++
 	}
@@ -311,25 +323,14 @@ func (c *Ctx) studentsImport() {
 		c.Redirect(back, "!Укажите название группы.")
 		return
 	}
-	sheet, err := c.readUploadXLSX()
+	rows, err := c.readUserImport(group)
 	if err != nil {
 		c.Redirect(back, "!"+err.Error())
 		return
 	}
-	var rows []importRow
-	for i, r := range sheet {
-		name := cell(r, 0)
-		if strings.TrimSpace(strings.Join(r, "")) == "" || (i == 0 && strings.EqualFold(name, "ФИО")) {
-			continue
-		}
-		row := importRow{Line: i + 1, Name: name, Login: cell(r, 1), Email: cell(r, 2), Role: RoleStudent, Group: group}
-		if len(r) > 3 && strings.TrimSpace(strings.Join(r[3:], "")) != "" {
-			row.Result = "ошибка: в строке есть столбцы вне шаблона"
-		}
-		rows = append(rows, row)
-	}
+	markDuplicateEmails(rows)
 	if len(rows) == 0 {
-		c.Redirect(back, "!В файле нет ни одной строки с ФИО.")
+		c.Redirect(back, "!В файле нет ни одной строки с данными.")
 		return
 	}
 	if len(rows) > 500 {
@@ -342,45 +343,57 @@ func (c *Ctx) studentsImport() {
 		return
 	}
 	c.Log("импорт группы из Excel", co.Title+" / "+group, created == len(rows), fmt.Sprintf("строк: %d, создано: %d", len(rows), created))
-	out := [][]any{{"Строка файла", "ФИО", "Логин", "Временный пароль", "Результат"}}
-	for _, r := range rows {
-		pw := ""
-		if r.Created {
-			pw = r.pw
-		}
-		out = append(out, []any{r.Line, r.Name, r.Login, pw, r.Result})
-	}
-	c.sendXLSX("Учётные записи — "+group+".xlsx", content.Sheet{Name: "Учётные записи", HeaderRows: 1, Widths: []float64{12, 40, 22, 24, 48}, Rows: out})
+	c.sendXLSX("Учётные записи — "+group+".xlsx", importResultSheet(rows))
 }
 
 // ---------- тест из Excel ----------
 
 var reSplit = regexp.MustCompile(`[;,\s]+`)
 
-// questionsFromSheet разбирает лист шаблона «Вопросы теста».
-func questionsFromSheet(sheet [][]string) ([]Question, error) {
+// importIssue — замечание к загруженному файлу: лист, строка, тип ошибки, пояснение.
+type importIssue struct {
+	Sheet string
+	Row   int
+	Kind  string
+	Text  string
+}
+
+// questionIssues разбирает лист шаблона и собирает все ошибки файла, а не только первую:
+// преподаватель получает полный протокол и исправляет файл за один раз.
+func questionIssues(sheetName string, sheet [][]string) ([]Question, []importIssue) {
 	var out []Question
+	var issues []importIssue
+	bad := func(row int, kind, text string) {
+		runes := []rune(text)
+		if len(runes) > 240 {
+			text = string(runes[:240]) + "…"
+		}
+		issues = append(issues, importIssue{Sheet: sheetName, Row: row, Kind: kind, Text: text})
+	}
 	for i, r := range sheet {
 		text := cell(r, 0)
 		if strings.TrimSpace(strings.Join(r, "")) == "" || (i == 0 && strings.EqualFold(text, "Вопрос")) {
 			continue
 		}
+		before := len(issues)
 		if text == "" {
-			return nil, fmt.Errorf("строка %d: отсутствует текст вопроса", i+1)
+			bad(i+1, "Не заполнено обязательное поле", "отсутствует текст вопроса")
 		}
 		q := Question{ID: secure.NewID(), Text: text, Points: 1}
 		if raw := cell(r, 1); raw != "" {
 			points, err := strconv.ParseFloat(strings.ReplaceAll(raw, ",", "."), 64)
 			if err != nil || math.IsNaN(points) || points < 0.1 || points > 100 {
-				return nil, fmt.Errorf("строка %d: баллы должны быть числом от 0,1 до 100", i+1)
+				bad(i+1, "Неверный формат значения", "баллы должны быть числом от 0,1 до 100, указано «"+raw+"»")
+			} else {
+				q.Points = points
 			}
-			q.Points = points
 		}
 		optionByColumn := map[int]int{}
 		for j := 3; j < len(r); j++ {
 			if v := cell(r, j); v != "" {
 				if j >= 9 {
-					return nil, fmt.Errorf("строка %d: шаблон поддерживает до шести вариантов", i+1)
+					bad(i+1, "Данные вне шаблона", "шаблон поддерживает до шести вариантов ответа")
+					break
 				}
 				optionByColumn[j-2] = len(q.Options)
 				q.Options = append(q.Options, Option{Text: v})
@@ -403,7 +416,8 @@ func questionsFromSheet(sheet [][]string) ([]Question, error) {
 				n, err := strconv.Atoi(s)
 				idx, exists := optionByColumn[n]
 				if err != nil || !exists {
-					return nil, fmt.Errorf("строка %d: правильный ответ «%s» ссылается на пустой или неверный столбец варианта", i+1, s)
+					bad(i+1, "Неверный правильный ответ", "«"+s+"» ссылается на пустой или отсутствующий столбец варианта")
+					continue
 				}
 				if !q.Options[idx].Correct {
 					q.Options[idx].Correct = true
@@ -415,16 +429,23 @@ func questionsFromSheet(sheet [][]string) ([]Question, error) {
 				q.Type = "single"
 			}
 		}
-		if err := validateQuestion(&q); err != nil {
-			return nil, fmt.Errorf("строка %d: %v", i+1, err)
+		if len(issues) == before {
+			if err := validateQuestion(&q); err != nil {
+				bad(i+1, "Неполный вопрос", err.Error())
+			}
 		}
-		out = append(out, q)
+		if len(issues) == before {
+			out = append(out, q)
+		}
 	}
-	if len(out) == 0 {
-		return nil, errors.New("в файле нет вопросов")
+	if len(issues) == 0 && len(out) == 0 {
+		bad(0, "Пустой файл", "в файле нет вопросов")
 	}
 	if len(out) > 1000 {
-		return nil, errors.New("в одном файле не более 1000 вопросов")
+		bad(0, "Превышен предел", "в одном файле не более 1000 вопросов")
+	}
+	if len(issues) > 0 {
+		return nil, issues
 	}
 	return out, nil
 }
@@ -439,13 +460,32 @@ func (c *Ctx) questionImportXLSX() {
 		c.Redirect(back, "!Вопросы загружаются только в тест.")
 		return
 	}
-	sheet, err := c.readUploadXLSX()
+	sheetName, sheet, cellIssues, err := c.readUploadXLSXReport()
+	var issues []importIssue
 	var qs []Question
-	if err == nil {
-		qs, err = questionsFromSheet(sheet)
-	}
 	if err != nil {
-		c.Redirect(back, "!Вопросы не загружены: "+err.Error()+".")
+		issues = []importIssue{{Sheet: sheetName, Kind: "Файл не прочитан", Text: err.Error()}}
+	} else {
+		for _, issue := range cellIssues {
+			// строка с формулой может лежать ниже последней строки с данными (например, итог под таблицей)
+			if issue.Row >= 1 && issue.Row <= len(sheet) {
+				sheet[issue.Row-1] = nil
+			}
+		}
+		qs, issues = questionIssues(sheetName, sheet)
+		if len(cellIssues) > 0 && len(issues) == 1 && issues[0].Kind == "Пустой файл" {
+			issues = nil
+		}
+		for _, issue := range cellIssues {
+			issues = append(issues, importIssue{Sheet: sheetName, Row: issue.Row, Kind: issue.Kind, Text: issue.Text})
+		}
+		sortBy(issues, func(a, b *importIssue) bool { return a.Row < b.Row })
+	}
+	if len(issues) > 0 {
+		// протокол проверки: лист, строка, тип ошибки; ни один вопрос не загружается
+		c.Log("импорт теста из Excel", it.Title, false, fmt.Sprintf("ошибок в файле: %d", len(issues)))
+		c.W.WriteHeader(http.StatusUnprocessableEntity)
+		c.Render("import_log", map[string]any{"Issues": issues, "Back": back, "Title": "Вопросы не загружены", "Template": "/templates/test.xlsx"})
 		return
 	}
 	c.writeMu.Lock()
@@ -536,12 +576,13 @@ func (c *Ctx) groupOf(u *User) string {
 	return g.Name
 }
 
-func (c *Ctx) docAnketa() {
+// anketaParas — текст анкеты слушателя (общий для бланков Word и PDF).
+func (c *Ctx) anketaParas() []content.Para {
 	u := c.User
 	p := []content.Para{
 		{Text: c.org(), Align: "center"},
 		{Text: "АНКЕТА СЛУШАТЕЛЯ", Bold: true, Align: "center", Size: 14, Before: 12},
-		{Text: "Заполните анкету и отправьте её преподавателю по электронной почте.", Align: "center", Size: 11},
+		{Text: "Заполните анкету и отправьте её на адрес, указанный на портале.", Align: "center", Size: 11},
 		{Text: "1. Фамилия, имя, отчество: " + u.FullName, Before: 12},
 		{Text: "2. Учебная группа: " + c.groupOf(u)},
 		{Text: "3. Имя пользователя (логин) на портале: " + u.Login},
@@ -551,8 +592,10 @@ func (c *Ctx) docAnketa() {
 		{Text: "Достоверность указанных сведений подтверждаю.", Before: 18},
 		{Text: "Дата: «____» __________ 20___ г.      Подпись: ____________ / ________________ /", Before: 12},
 	}
-	c.sendDOCX("Анкета слушателя.docx", p)
+	return p
 }
+
+func (c *Ctx) docAnketa() { c.sendDOCX("Анкета слушателя.docx", c.anketaParas()) }
 
 func orBlank(s string) string {
 	if s == "" {
@@ -586,37 +629,12 @@ func (c *Ctx) docSoglasie() {
 
 // completed сообщает, прошёл ли учащийся все опубликованные элементы курса.
 func (a *App) completed(userID, courseID string) bool {
-	items := a.courseItems(courseID, true)
-	if len(items) == 0 {
-		return false
-	}
-	var byItem = make(map[string][]Attempt)
-	for _, at := range a.Attempts.Find(func(at *Attempt) bool {
-		return at.UserID == userID && at.CourseID == courseID && at.Done
-	}) {
-		byItem[at.ItemID] = append(byItem[at.ItemID], at)
-	}
-	for _, it := range items {
-		passed := false
-		switch it.Kind {
-		case KindTest:
-			for _, at := range byItem[it.ID] {
-				if at.passed(&it) {
-					passed = true
-					break
-				}
-			}
-		case KindTask:
-			sub, ok := a.Subs.Get(it.ID + ":" + userID)
-			passed = ok && sub.Graded && sub.CourseID == courseID
-		case KindLesson, KindFile:
-			_, passed = a.Progress.Get(userID + ":" + it.ID)
-		}
-		if !passed {
-			return false
-		}
-	}
-	return true
+	return a.completedInPeriod(userID, courseID, time.Time{}, time.Time{})
+}
+
+func (a *App) completedInPeriod(userID, courseID string, from, to time.Time) bool {
+	state := a.courseCompletion(courseID, userID, from, to)
+	return state.complete(userID)
 }
 
 func (c *Ctx) teacherNames(co *Course) string {
@@ -638,6 +656,11 @@ func (c *Ctx) docZayavlenie() {
 		c.Redirect("/courses/"+co.ID, "!Заявление доступно после прохождения всех разделов курса.")
 		return
 	}
+	c.sendDOCX("Заявление на выдачу сертификата.docx", c.zayavlenieParas(co))
+}
+
+// zayavlenieParas — текст заявления на выдачу сертификата (общий для Word и PDF).
+func (c *Ctx) zayavlenieParas(co *Course) []content.Para {
 	u := c.User
 	teacher := c.teacherNames(co)
 	if teacher == "" {
@@ -651,7 +674,7 @@ func (c *Ctx) docZayavlenie() {
 		{Text: "Сертификат прошу (нужное подчеркнуть): выдать лично / направить по электронной почте " + orBlank(u.Email) + ".", Align: "both", Indent: true},
 		{Text: "Дата: " + time.Now().In(c.Loc).Format("02.01.2006") + "      Подпись: ____________ / " + u.FullName + " /", Before: 24},
 	}
-	c.sendDOCX("Заявление на выдачу сертификата.docx", p)
+	return p
 }
 
 // ---------- сертификат (PDF) ----------
@@ -870,6 +893,10 @@ func (c *Ctx) certificateIssue() {
 		c.Redirect("/certificates/"+old.ID, "")
 		return
 	}
+	if !c.applicationReady(co.ID, true) {
+		c.Redirect(back, "!Сначала загрузите скан или фотографию подписанного заявления и дождитесь сверки.")
+		return
+	}
 	org, teachers := strings.TrimSpace(c.Cfg.OrgName), c.teacherNames(co)
 	if org == "" || teachers == "" {
 		c.Redirect(back, "!Для выдачи сертификата укажите организацию в настройках сервера и назначьте преподавателя курса.")
@@ -903,6 +930,10 @@ func (c *Ctx) certificateIssue() {
 		c.Redirect("/certificates/"+old.ID, "")
 		return
 	}
+	if !c.applicationReady(co.ID, true) {
+		c.Redirect(back, "!Заявление ожидает сверки либо файл недоступен.")
+		return
+	}
 	g = c.gradebook(co.ID)
 	if ct.UserID != c.User.ID || ct.StudentName != c.User.FullName || ct.CourseTitle != current.Title ||
 		ct.Teachers != c.teacherNames(&current) || ct.Percent != percent(g.total(c.User.ID), g.Max) {
@@ -917,13 +948,30 @@ func (c *Ctx) certificateIssue() {
 		return
 	}
 	ct.PDFFileID = m.ID
+	if c.Cfg.SMTPAddr != "" && c.Cfg.SMTPFrom != "" && validEmail(c.User.Email) {
+		ct.MailTo = c.User.Email
+		ct.MailNext = now
+	}
 	if err := c.Certs.Put(ct.ID, ct); err != nil {
 		c.removeFile(m.ID)
 		c.Fail(http.StatusServiceUnavailable, "Не удалось оформить сертификат.")
 		return
 	}
 	c.Log("выдача сертификата", co.Title, true, "№ "+ct.Number)
+	c.wakeMailer()
 	c.Redirect("/certificates/"+ct.ID, "")
+}
+
+func (c *Ctx) applicationReady(courseID string, verifyHash bool) bool {
+	if !c.S().CertNeedsApp {
+		return true
+	}
+	ap, ok := c.CertApps.Get(courseID + ":" + c.User.ID)
+	if !ok || ap.Decision != "approve" {
+		return false
+	}
+	m, ok := c.Files.Get(ap.FileID)
+	return ok && c.checkApplicationFile(ap, m, verifyHash)
 }
 
 func (c *Ctx) certificateGet() {
@@ -940,25 +988,7 @@ func (c *Ctx) certificateGet() {
 		c.Deny()
 		return
 	}
-	var pdf []byte
-	var err error
-	if ct.PDFFileID == "" {
-		pdf, err = c.certificatePDF(&ct) // сертификаты, выданные до сохранения PDF
-	} else {
-		var buf bytes.Buffer
-		m, ok := c.Files.Get(ct.PDFFileID)
-		if !ok || m.Scope != "certificate" || m.OwnerID != ct.UserID || m.SHA256 != ct.PDFHash {
-			err = errors.New("не найдена запись PDF")
-		} else {
-			f, openErr := os.Open(c.filePath(m.ID))
-			err = openErr
-			if err == nil {
-				err = copyVerifiedFile(&buf, f, &m)
-				f.Close()
-				pdf = buf.Bytes()
-			}
-		}
-	}
+	pdf, err := c.readCertificatePDF(&ct)
 	if err != nil {
 		c.Log("открытие сертификата", ct.Number, false, err.Error())
 		c.Fail(http.StatusServiceUnavailable, "Не удалось открыть сертификат. Сообщите администратору.")
@@ -976,4 +1006,17 @@ func (a *App) storeCertificatePDF(ct *Certificate, pdf []byte) (FileMeta, error)
 		ID: secure.NewID(), Name: "Сертификат " + ct.Number + ".pdf", Ext: "pdf",
 		OwnerID: ct.UserID, CourseID: ct.CourseID, Scope: "certificate", Created: ct.Issued,
 	})
+}
+
+// importResultSheet — лист с результатом импорта: по строке на каждую строку файла.
+func importResultSheet(rows []importRow) content.Sheet {
+	out := [][]any{{"Строка файла", "ФИО", "Email", "Роль", "Группа", "Логин", "Временный пароль", "Результат"}}
+	for _, r := range rows {
+		pw := ""
+		if r.Created {
+			pw = r.pw
+		}
+		out = append(out, []any{r.Line, r.Name, r.Email, roleName(r.Role), r.Group, r.Login, pw, r.Result})
+	}
+	return content.Sheet{Name: "Учётные записи", HeaderRows: 1, Widths: []float64{12, 36, 28, 16, 14, 20, 22, 52}, Rows: out}
 }

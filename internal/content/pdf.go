@@ -434,3 +434,78 @@ func chunkBF(entries string) string {
 	}
 	return b.String()
 }
+
+// ParasPDF формирует одностраничный текстовый документ A4 (бланк анкеты, заявления) из абзацев.
+// Если текст не помещается на страницу, кегль уменьшается.
+func ParasPDF(fontData []byte, title string, paras []Para) ([]byte, error) {
+	const W, H, left, right, top, bottom = 595.28, 841.89, 71.0, 42.0, 60.0, 50.0
+	for scale := 1.0; scale >= 0.6; scale -= 0.05 {
+		p, err := NewPDF(W, H, fontData)
+		if err != nil {
+			return nil, err
+		}
+		ink := Hex(0x000000)
+		y := H - top
+		for _, para := range paras {
+			size := float64(para.Size)
+			if size == 0 {
+				size = 12
+			}
+			size *= scale
+			lead := size * 1.38
+			y -= float64(para.Before) * scale
+			for _, hard := range strings.Split(para.Text, "\n") {
+				first := true
+				width := W - left - right
+				indent := 0.0
+				if para.Indent {
+					indent = 28
+				}
+				words := strings.Fields(hard)
+				if len(words) == 0 {
+					y -= lead
+					continue
+				}
+				// первая строка абзаца короче на величину красной строки
+				var lines []string
+				cur := ""
+				for _, w := range words {
+					limit := width
+					if len(lines) == 0 {
+						limit -= indent
+					}
+					if cur != "" && p.TextWidth(cur+" "+w, size) > limit {
+						lines = append(lines, cur)
+						cur = w
+					} else if cur == "" {
+						cur = w
+					} else {
+						cur += " " + w
+					}
+				}
+				lines = append(lines, cur)
+				for _, line := range lines {
+					y -= lead
+					switch para.Align {
+					case "center":
+						p.Text(W/2+(left-right)/2, y, size, line, 0, ink, para.Bold)
+					case "right":
+						p.Text(W-right, y, size, line, 1, ink, para.Bold)
+					default:
+						x := left
+						if first {
+							x += indent
+						}
+						p.Text(x, y, size, line, -1, ink, para.Bold)
+					}
+					first = false
+				}
+			}
+			y -= 4 * scale
+		}
+		if y >= bottom {
+			return p.Bytes(title), nil
+		}
+	}
+	return nil, errors.New("текст не помещается на одну страницу")
+}

@@ -153,20 +153,39 @@ const (
 	maxXLSXPart = 32 << 20
 )
 
-// ReadXLSX читает первый лист книги Excel и возвращает строки с текстом ячеек.
-// Пустые строки в конце отбрасываются, внутри таблицы — сохраняются.
-func ReadXLSX(r io.ReaderAt, size int64) ([][]string, error) {
+type XLSXIssue struct {
+	Row  int
+	Kind string
+	Text string
+}
+
+// ReadXLSXNamed читает первый лист книги и возвращает также его название (для сообщений об ошибках).
+func ReadXLSXNamed(r io.ReaderAt, size int64) (string, [][]string, error) {
+	name, rows, issues, err := ReadXLSXReport(r, size)
+	if err == nil && len(issues) > 0 {
+		first := issues[0]
+		err = fmt.Errorf("строка %d: %s", first.Row, first.Text)
+	}
+	if err != nil {
+		return name, nil, err
+	}
+	return name, rows, nil
+}
+
+// ReadXLSXReport retains row-level cell errors separately from invalid workbook structure.
+func ReadXLSXReport(r io.ReaderAt, size int64) (string, [][]string, []XLSXIssue, error) {
+	sheetName := "Лист 1"
 	zr, err := zip.NewReader(r, size)
 	if err != nil {
-		return nil, errors.New("файл не является книгой Excel (.xlsx)")
+		return sheetName, nil, nil, errors.New("файл не является книгой Excel (.xlsx)")
 	}
 	if len(zr.File) > maxDocxFiles {
-		return nil, errors.New("слишком много частей в книге")
+		return sheetName, nil, nil, errors.New("слишком много частей в книге")
 	}
 	d := &docx{files: map[string]*zip.File{}}
 	for _, f := range zr.File {
 		if _, exists := d.files[f.Name]; exists {
-			return nil, errors.New("повторяющаяся часть книги Excel")
+			return sheetName, nil, nil, errors.New("повторяющаяся часть книги Excel")
 		}
 		d.files[f.Name] = f
 	}
@@ -184,6 +203,9 @@ func ReadXLSX(r io.ReaderAt, size int64) ([][]string, error) {
 	// первый лист — по порядку в книге, а не по имени файла
 	sheetPath := "xl/worksheets/sheet1.xml"
 	if wb := read("xl/workbook.xml").find("sheets"); wb != nil && len(wb.kids) > 0 {
+		if n := wb.kids[0].attrs["name"]; n != "" {
+			sheetName = n
+		}
 		if rels := read("xl/_rels/workbook.xml.rels").child("Relationships"); rels != nil {
 			for _, rel := range rels.kids {
 				if rel.attrs["Id"] == wb.kids[0].attrs["id"] {
@@ -199,7 +221,7 @@ func ReadXLSX(r io.ReaderAt, size int64) ([][]string, error) {
 	}
 	sheet := read(sheetPath).find("sheetData")
 	if sheet == nil {
-		return nil, errors.New("в книге не найден лист с данными")
+		return sheetName, nil, nil, errors.New("в книге не найден лист с данными")
 	}
 	var shared []string
 	if sst := read("xl/sharedStrings.xml").child("sst"); sst != nil {
@@ -210,6 +232,7 @@ func ReadXLSX(r io.ReaderAt, size int64) ([][]string, error) {
 		}
 	}
 	var rows [][]string
+	var issues []XLSXIssue
 	for _, row := range sheet.kids {
 		if row.name != "row" {
 			continue
@@ -218,12 +241,12 @@ func ReadXLSX(r io.ReaderAt, size int64) ([][]string, error) {
 		if raw := row.attrs["r"]; raw != "" {
 			v, err := strconv.Atoi(raw)
 			if err != nil || v < rn {
-				return nil, fmt.Errorf("некорректный номер строки %q", raw)
+				return sheetName, nil, nil, fmt.Errorf("некорректный номер строки %q", raw)
 			}
 			rn = v
 		}
 		if rn > maxXLSXRows {
-			return nil, fmt.Errorf("в листе больше %d строк", maxXLSXRows)
+			return sheetName, nil, nil, fmt.Errorf("в листе больше %d строк", maxXLSXRows)
 		}
 		for len(rows) < rn {
 			rows = append(rows, nil)
@@ -242,26 +265,27 @@ func ReadXLSX(r io.ReaderAt, size int64) ([][]string, error) {
 					col = col*26 + int(ref[n]-'A') + 1
 					n++
 					if col > 16384 {
-						return nil, fmt.Errorf("строка %d: неверный адрес ячейки", rn)
+						return sheetName, nil, nil, fmt.Errorf("строка %d: неверный адрес ячейки", rn)
 					}
 				}
 				rowNumber, err := strconv.Atoi(ref[n:])
 				if col == 0 || err != nil || rowNumber != rn {
-					return nil, fmt.Errorf("строка %d: неверный адрес ячейки", rn)
+					return sheetName, nil, nil, fmt.Errorf("строка %d: неверный адрес ячейки", rn)
 				}
 				col--
 			}
 			if col < next {
-				return nil, fmt.Errorf("строка %d: повторяющаяся ячейка", rn)
+				return sheetName, nil, nil, fmt.Errorf("строка %d: повторяющаяся ячейка", rn)
 			}
 			if col >= maxXLSXCols {
 				if c.child("v") != nil || c.child("is") != nil || c.child("f") != nil {
-					return nil, fmt.Errorf("строка %d: данные за пределами %d столбцов", rn, maxXLSXCols)
+					issues = append(issues, XLSXIssue{rn, "Данные вне шаблона", fmt.Sprintf("данные за пределами %d столбцов", maxXLSXCols)})
 				}
 				continue
 			}
 			if c.child("f") != nil || c.attrs["t"] == "e" {
-				return nil, fmt.Errorf("строка %d: замените формулу или ошибку Excel обычным значением", rn)
+				issues = append(issues, XLSXIssue{rn, "Формула или ошибка Excel", "замените ячейку обычным значением"})
+				continue
 			}
 			next = col + 1
 			val := ""
@@ -271,7 +295,8 @@ func ReadXLSX(r io.ReaderAt, size int64) ([][]string, error) {
 					if i, err := strconv.Atoi(strings.TrimSpace(v.text)); err == nil && i >= 0 && i < len(shared) {
 						val = shared[i]
 					} else {
-						return nil, fmt.Errorf("строка %d: повреждена строковая ячейка", rn)
+						issues = append(issues, XLSXIssue{rn, "Повреждена строковая ячейка", "неверная ссылка на таблицу строк"})
+						continue
 					}
 				}
 			case "inlineStr":
@@ -297,7 +322,7 @@ func ReadXLSX(r io.ReaderAt, size int64) ([][]string, error) {
 	for len(rows) > 0 && strings.Join(rows[len(rows)-1], "") == "" {
 		rows = rows[:len(rows)-1]
 	}
-	return rows, nil
+	return sheetName, rows, issues, nil
 }
 
 // siText собирает текст строки (простой или с форматированными фрагментами), без фонетических подсказок.

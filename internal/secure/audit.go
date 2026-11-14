@@ -91,13 +91,17 @@ func scanAuditPrefix(path string, limit int64, visit func(AuditRecord) error) er
 	if limit >= 0 {
 		input = io.LimitReader(input, limit)
 	}
+	return scanAuditReader(input, filepath.Base(path), visit)
+}
+
+func scanAuditReader(input io.Reader, name string, visit func(AuditRecord) error) error {
 	sc := bufio.NewScanner(input)
 	// Записи старых версий могли превышать прежний лимит в 1 МиБ.
 	sc.Buffer(make([]byte, 64<<10), 32<<20)
 	for n := 1; sc.Scan(); n++ {
 		var r AuditRecord
 		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
-			return fmt.Errorf("%s: повреждена строка №%d", filepath.Base(path), n)
+			return fmt.Errorf("%s: повреждена строка №%d", name, n)
 		}
 		if err := visit(r); err != nil {
 			return err
@@ -212,35 +216,6 @@ func (a *Audit) saveHead() error {
 	return store.WriteFileAtomic(filepath.Join(a.dir, AuditHeadFile), b, 0o600)
 }
 
-// WithFiles фиксирует границу журнала на время резервного копирования.
-func (a *Audit) WithFiles(fn func([]string) error) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.failed != nil {
-		return a.failed
-	}
-	_, last, head, err := verifyAudit(a.dir)
-	if err != nil {
-		return err
-	}
-	if last != a.seq || head != a.prev {
-		return errors.New("журнал аудита изменён после запуска")
-	}
-	if a.seq > 0 {
-		if err := a.saveHead(); err != nil {
-			return err
-		}
-	}
-	files := AuditFiles(a.dir)
-	headPath := filepath.Join(a.dir, AuditHeadFile)
-	if _, err := os.Stat(headPath); err == nil {
-		files = append(files, headPath)
-	} else if a.seq > 0 || !os.IsNotExist(err) {
-		return err
-	}
-	return fn(files)
-}
-
 func (a *Audit) Verify() (int, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -331,12 +306,6 @@ func (a *Audit) Close() {
 func VerifyAudit(dir string) (int, error) {
 	n, _, _, err := verifyAudit(dir)
 	return n, err
-}
-
-// AuditFirstSeq возвращает номер первой имеющейся записи (больше 1 — ранние файлы перенесены в архив).
-func AuditFirstSeq(dir string) uint64 {
-	first, _, _ := auditStart(dir)
-	return first
 }
 
 // verifyAudit проверяет непрерывность цепочки имеющихся файлов и контрольную точку.

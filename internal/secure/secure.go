@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -80,7 +81,14 @@ func (k *Keys) HashPassword(password string) string {
 	return k.hashWith(password, salt, Iterations)
 }
 
+// hashSlots ограничивает число одновременных вычислений PBKDF2: одно ядро остаётся свободным
+// для остальных запросов. Без этого одновременный вход или смена пароля целой учебной группой
+// занимали все ядра, и сохранение ответов теста у других пользователей задерживалось на секунды.
+var hashSlots = make(chan struct{}, max(1, runtime.NumCPU()-1))
+
 func (k *Keys) hashWith(password string, salt []byte, iter int) string {
+	hashSlots <- struct{}{}
+	defer func() { <-hashSlots }()
 	mac := hmac.New(sha256.New, k.pepper)
 	mac.Write([]byte(password))
 	dk, _ := pbkdf2.Key(sha256.New, hex.EncodeToString(mac.Sum(nil)), salt, iter, 32)
@@ -176,12 +184,6 @@ func totpAt(secret string, step int64) (string, error) {
 	off := h[len(h)-1] & 0x0f
 	v := binary.BigEndian.Uint32(h[off:off+4]) & 0x7fffffff
 	return fmt.Sprintf("%06d", v%1000000), nil
-}
-
-// TOTPCode возвращает код для момента времени t.
-func TOTPCode(secret string, t time.Time) string {
-	c, _ := totpAt(secret, t.Unix()/30)
-	return c
 }
 
 // VerifyTOTP проверяет код с допуском ±skew шагов (по 30 с) на расхождение часов сервера и

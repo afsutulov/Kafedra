@@ -12,7 +12,7 @@
 <h3>Разбор ответов</h3>
 {{range $i, $r := .Review}}
 <div class="question">
-  <div class="post-head"><span class="muted">Вопрос {{add $i 1}}</span>{{if $r.Correct}}<span class="tag ok">верно</span>{{else if $r.Got}}<span class="tag">частично верно</span>{{else}}<span class="tag warn">неверно</span>{{end}}</div>
+  <div class="post-head"><span class="muted">Вопрос {{add $i 1}} из {{len $.Review}}</span><span>{{if $r.Correct}}<span class="tag ok">верно</span>{{else if $r.Got}}<span class="tag">частично верно</span>{{else}}<span class="tag warn">неверно</span>{{end}} <span class="tag">{{num $r.Got}} из {{num $r.Q.Points}} б.</span></span></div>
   <div class="qtext">{{$r.Q.Text}}</div>
   {{if eq $r.Q.Type "text"}}
     <div class="opt {{if $r.Correct}}right{{else}}wrong{{end}}">Ответ: {{if $r.A.Text}}{{$r.A.Text}}{{else}}(нет ответа){{end}}</div>

@@ -1,0 +1,33 @@
+{{define "title"}}{{.Room.Title}} — общение{{end}}
+{{define "content"}}
+<a class="ghost-link" href="/chat">← Все чаты</a>
+<div class="section-header"><h2>{{.Room.Title}}</h2>{{if .Room.Moderator}}<span class="tag">вы модератор</span>{{end}}</div>
+<div id="chat-list" class="chat-list" data-src="/chat/{{.Room.Key}}/messages" aria-live="polite">{{template "messages" .}}</div>
+<form method="post" action="/chat/{{.Room.Key}}" enctype="multipart/form-data" class="stack-form glass-subcard">{{template "csrf" .}}
+  <label>Сообщение<textarea name="body" rows="3" maxlength="5000"></textarea></label>
+  <label>Вложение (необязательно)<input type="file" name="file" accept=".jpg,.jpeg,.png,.pdf,.docx"></label>
+  <div class="row"><button class="primary-btn" type="submit">Отправить</button><span class="note">Вложения: изображения JPG и PNG, PDF, DOCX; до {{.MaxMB}} МБ. Лента обновляется автоматически.</span></div>
+</form>
+{{if .Room.Moderator}}
+<details><summary>Участники и модерация ({{len .Members}})</summary>
+  <p class="note">Исключённый участник не видит чат и не может писать в него. Удаление сообщений и исключения записываются в журнал событий.</p>
+  <div class="table-wrap"><table><tbody>
+  {{range .Members}}<tr><td>{{.FullName}}</td><td>{{if index $.Banned .ID}}<span class="tag warn">исключён</span>{{end}}</td>
+    <td class="row end"><form method="post" action="/chat/{{$.Room.Key}}/ban" class="inline">{{template "csrf" $}}<input type="hidden" name="user" value="{{.ID}}">
+      {{if index $.Banned .ID}}<input type="hidden" name="action" value="restore"><button class="ghost-btn small" type="submit">Вернуть в чат</button>
+      {{else}}<button class="danger-btn small" type="submit">Исключить</button>{{end}}</form></td></tr>
+  {{else}}<tr><td class="muted">В чате нет учащихся.</td></tr>{{end}}
+  </tbody></table></div>
+</details>
+{{end}}
+{{end}}
+{{define "messages"}}
+{{range .Msgs}}
+<div class="post{{if .Mine}} mine{{end}}"><div class="post-head"><span><strong>{{.Author}}</strong>{{if and .Role (ne .Role "student")}} <span class="tag">{{role .Role}}</span>{{end}}</span><span class="muted">{{dt .Post.Created}}</span></div>
+  {{if .Post.Body}}<div class="body">{{.Post.Body}}</div>{{end}}
+  {{if .File}}{{if eq .FileType "image"}}<a href="/files/{{.File.ID}}"><img class="chat-img" src="/files/{{.File.ID}}" alt="{{.File.Name}}" loading="lazy"></a>
+  {{else}}<p class="file-line"><span class="file-ext">{{.File.Ext}}</span><a href="/files/{{.File.ID}}">{{.File.Name}}</a><span class="muted">{{size .File.Size}}</span></p>{{end}}{{end}}
+  {{if or .Mine $.Room.Moderator}}<form method="post" action="/chat/{{$.Room.Key}}/delete" data-confirm="Удалить сообщение?">{{template "csrf" $}}<input type="hidden" name="id" value="{{.Post.ID}}"><button class="danger-btn small" type="submit">Удалить</button></form>{{end}}
+</div>
+{{else}}<p class="muted">Сообщений пока нет. Напишите первым.</p>{{end}}
+{{end}}

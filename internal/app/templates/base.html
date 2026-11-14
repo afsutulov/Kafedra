@@ -32,7 +32,7 @@
       {{template "content" .}}
     </section>
   </main>
-  <button type="button" id="to-top" class="to-top hidden" title="В начало страницы" aria-label="В начало страницы">↑ Вверх</button>
+  <button type="button" id="to-top" class="to-top hidden" title="В начало страницы" aria-label="В начало страницы">↑ Наверх</button>
   <footer class="footer"><span>{{.Product}}</span><span>© {{.Vendor}}</span></footer>
 </div>
 {{else}}
@@ -49,9 +49,10 @@
 <div class="tabs">
   <a class="tab{{if eq .Tab "materials"}} active{{end}}" href="/courses/{{.Course.ID}}">Материалы</a>
   <a class="tab{{if eq .Tab "news"}} active{{end}}" href="/courses/{{.Course.ID}}?tab=news">Объявления</a>
-  <a class="tab{{if eq .Tab "talk"}} active{{end}}" href="/courses/{{.Course.ID}}?tab=talk">Обсуждение</a>
+  <a class="tab" href="/chat/c-{{.Course.ID}}">Общение</a>
   <a class="tab{{if eq .Tab "people"}} active{{end}}" href="/courses/{{.Course.ID}}?tab=people">Участники</a>
-  {{if .Manage}}<a class="tab{{if eq .Tab "journal"}} active{{end}}" href="/courses/{{.Course.ID}}/journal">Журнал</a>{{end}}
+  {{if .Manage}}<a class="tab{{if eq .Tab "journal"}} active{{end}}" href="/courses/{{.Course.ID}}/journal">Журнал</a>
+  <a class="tab{{if eq .Tab "analytics"}} active{{end}}" href="/courses/{{.Course.ID}}/analytics">Аналитика</a>{{end}}
 </div>
 {{end}}
 {{define "files"}}
@@ -68,7 +69,7 @@
 <div class="glass-subcard">
   <strong>Документы слушателя</strong>
   <p>Скачайте и заполните анкету. Отправьте её преподавателю на указанный служебный адрес. Согласие скачайте отдельным бланком. Порядок заполнения и передачи подписанного согласия уточните у оператора персональных данных.</p>
-  <p class="row"><a class="soft-btn link-btn" href="/docs/anketa.docx">Анкета слушателя (.docx)</a><a class="soft-btn link-btn" href="/docs/soglasie.docx">Согласие на обработку персональных данных (.docx)</a></p>
+  <p class="row"><a class="soft-btn link-btn" href="/docs/anketa.pdf">Анкета слушателя (PDF)</a><a class="ghost-btn link-btn" href="/docs/anketa.docx">Анкета (.docx)</a><a class="soft-btn link-btn" href="/docs/soglasie.docx">Согласие на обработку персональных данных (.docx)</a></p>
   {{if .TeacherMails}}<p class="note">Преподаватели: {{range $i, $t := .TeacherMails}}{{if $i}}; {{end}}{{$t.FullName}}{{if $t.Email}} — <a href="mailto:{{$t.Email}}">{{$t.Email}}</a>{{else}} — адрес уточните у куратора{{end}}{{end}}</p>
   {{else}}<p class="note">Адрес электронной почты преподавателя уточните у куратора группы.</p>{{end}}
 </div>

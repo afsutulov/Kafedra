@@ -24,8 +24,17 @@
   <dt>Последний вход</dt><dd>{{dt .U.LastLogin}} {{.U.LastIP}}</dd>
   <dt>Пароль изменён</dt><dd>{{dt .U.PassChanged}}{{if .U.MustChange}} <span class="tag warn">требуется смена</span>{{end}}</dd>
   <dt>Согласие на обработку ПДн</dt><dd>{{if zero .U.Consent}}не получено{{else}}{{dt .U.Consent}}{{end}}</dd>
+  {{if eq .U.Role "student"}}<dt>Анкета</dt><dd>{{if zero .U.QuestSent}}отправка не отмечена{{else}}отмечена отправка {{dt .U.QuestSent}}{{end}};
+    {{if zero .U.QuestApproved}}доступ к обучению не открыт{{else}}доступ открыт {{dt .U.QuestApproved}}{{end}}</dd>{{end}}
   <dt>Активных сеансов</dt><dd>{{.Sessions}}</dd>
 </dl></div>
+{{if eq .U.Role "student"}}
+<h3>Доступ к обучению (анкета)</h3>
+<div class="row">
+  {{if zero .U.QuestApproved}}<form method="post" action="/users/{{.U.ID}}/questionnaire">{{template "csrf" .}}<input type="hidden" name="action" value="approve"><button class="soft-btn" type="submit">Анкета проверена — открыть доступ</button></form>
+  {{else}}<form method="post" action="/users/{{.U.ID}}/questionnaire">{{template "csrf" .}}<input type="hidden" name="action" value="revoke"><button class="ghost-btn" type="submit">Закрыть доступ</button></form>{{end}}
+</div>
+{{end}}
 <h3>Пароль и удаление</h3>
 <div class="row">
   <form method="post" action="/admin/users/{{.U.ID}}/reset" data-confirm="Выдать новый временный пароль? Текущий пароль и все сеансы пользователя перестанут действовать.">{{template "csrf" .}}<button class="soft-btn" type="submit">Сбросить пароль</button></form>
